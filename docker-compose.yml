@@ -1,0 +1,9 @@
+services:
+  mbank-integration:
+    build: .
+    env_file:
+      - .env
+    ports:
+      - "8010:8010"
+    volumes:
+      - ./data:/app/data
