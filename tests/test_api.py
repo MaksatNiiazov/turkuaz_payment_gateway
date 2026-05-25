@@ -7,12 +7,17 @@ from pydantic import SecretStr
 
 from mbank_integration.api import create_app
 from mbank_integration.config import Settings
-from mbank_integration.models import DynamicQRResponse
+from mbank_integration.models import DynamicQRResponse, StaticQRResponse
 from mbank_integration.store import SQLiteMKassaStore
 
 
 class FakeMKassaClient:
+    def __init__(self) -> None:
+        self.last_dynamic_payload = None
+        self.last_static_payload = None
+
     async def create_dynamic_qr(self, payload):
+        self.last_dynamic_payload = payload
         return DynamicQRResponse(
             id="MKSA-1",
             amount=payload.amount,
@@ -22,6 +27,18 @@ class FakeMKassaClient:
             cashier=payload.cashier,
             metadata=payload.metadata,
             payment_token="https://app.mbank.kg/qr#abc",
+        )
+
+    async def create_static_qr(self, payload):
+        self.last_static_payload = payload
+        return StaticQRResponse(
+            id=1,
+            static_qr_link="https://app.mbank.kg/qr#static",
+            branch=payload.branch,
+            cashier=payload.cashier,
+            amount=payload.amount,
+            change_amount=payload.change_amount,
+            metadata=payload.metadata,
         )
 
     async def aclose(self) -> None:
@@ -55,6 +72,65 @@ def test_integration_key_protects_control_endpoints(tmp_path: Path) -> None:
     assert unauthorized.status_code == 401
     assert authorized.status_code == 200
     assert authorized.json()["id"] == "MKSA-1"
+
+
+def test_dynamic_qr_form_builds_payload_from_fields(tmp_path: Path) -> None:
+    fake_client = FakeMKassaClient()
+    app = create_app(
+        settings=make_settings(tmp_path / "app.db"),
+        client=fake_client,
+        store=SQLiteMKassaStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/qr/dynamic/form",
+            headers={"X-Integration-Key": "pos-secret"},
+            data={
+                "amount": "100",
+                "invoice_number": "TIGER-FACTURE-1001",
+                "source": "tiger",
+            },
+        )
+
+    assert response.status_code == 200
+    assert fake_client.last_dynamic_payload.amount == 100
+    assert fake_client.last_dynamic_payload.metadata == {
+        "invoice_number": "TIGER-FACTURE-1001",
+        "source": "tiger",
+    }
+
+
+def test_static_qr_form_builds_payload_from_fields(tmp_path: Path) -> None:
+    fake_client = FakeMKassaClient()
+    app = create_app(
+        settings=make_settings(tmp_path / "app.db"),
+        client=fake_client,
+        store=SQLiteMKassaStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/qr/static/form",
+            headers={"X-Integration-Key": "pos-secret"},
+            data={
+                "branch": "236366",
+                "cashier": "130610",
+                "amount": "100",
+                "change_amount": "false",
+                "invoice_number": "TIGER-FACTURE-1001",
+                "payer_code": "12345678901234",
+            },
+        )
+
+    assert response.status_code == 200
+    assert fake_client.last_static_payload.branch == 236366
+    assert fake_client.last_static_payload.cashier == 130610
+    assert fake_client.last_static_payload.metadata == {
+        "invoice_number": "TIGER-FACTURE-1001",
+        "source": "tiger",
+        "payer_code": "12345678901234",
+    }
 
 
 def test_integration_key_pool_identifies_integration_name(tmp_path: Path) -> None:

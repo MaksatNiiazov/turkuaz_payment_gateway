@@ -32,6 +32,10 @@ Swagger UI:
 http://localhost:8010/docs
 ```
 
+В Swagger нажмите `Authorize`, вставьте выданный ключ в `X-Integration-Key`.
+Для ручного тестирования используйте `/api/v1/qr/dynamic/form` и `/api/v1/qr/static/form`: там можно заполнять отдельные поля без JSON.
+JSON endpoint'ы `/api/v1/qr/dynamic` и `/api/v1/qr/static` оставлены для 1С, сайта, POS и других системных интеграций.
+
 Проверка:
 
 ```bash
@@ -67,6 +71,8 @@ X-Integration-Key: secret-for-1c
 | --- | --- | --- |
 | `POST` | `/api/v1/qr/dynamic` | Создать динамическую QR-транзакцию |
 | `POST` | `/api/v1/qr/static` | Создать статическую QR-транзакцию |
+| `POST` | `/api/v1/qr/dynamic/form` | Создать динамический QR через поля формы в Swagger |
+| `POST` | `/api/v1/qr/static/form` | Создать статический QR через поля формы в Swagger |
 | `GET` | `/api/v1/transactions/{transaction_id}` | Получить статус транзакции |
 | `PUT` | `/api/v1/transactions/{transaction_id}/cancel` | Отменить неоплаченную динамическую транзакцию |
 | `GET` | `/api/v1/transactions` | Получить/отфильтровать список транзакций |

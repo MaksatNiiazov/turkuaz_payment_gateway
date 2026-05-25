@@ -99,7 +99,19 @@ def parse_optional_string(value: Any) -> str | None:
 
 
 class MetadataRequestMixin(APIModel):
-    metadata: dict[str, str] | None = None
+    metadata: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Additional MKassa metadata. Maximum 5 keys, each value up to 150 chars. "
+            "For Tiger facture code use invoice_number."
+        ),
+        examples=[
+            {
+                "invoice_number": "TIGER-FACTURE-1001",
+                "source": "tiger",
+            }
+        ],
+    )
 
     @field_validator("metadata", mode="before")
     @classmethod
@@ -108,10 +120,64 @@ class MetadataRequestMixin(APIModel):
 
 
 class DynamicQRCreate(MetadataRequestMixin):
-    amount: int = Field(gt=0, description="Amount in tyiyn")
-    branch: int | None = Field(default=None, gt=0)
-    cashier: int | None = Field(default=None, gt=0)
-    is_long_living: bool | None = None
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "summary": "Dynamic QR with Tiger facture code",
+                    "value": {
+                        "amount": 100,
+                        "metadata": {
+                            "invoice_number": "TIGER-FACTURE-1001",
+                            "source": "tiger",
+                        },
+                    },
+                },
+                {
+                    "summary": "Dynamic QR with explicit branch and cashier",
+                    "value": {
+                        "amount": 100,
+                        "branch": 236366,
+                        "cashier": 130610,
+                        "is_long_living": True,
+                        "metadata": {
+                            "invoice_number": "TIGER-FACTURE-1001",
+                            "source": "tiger",
+                        },
+                    },
+                },
+            ]
+        }
+    )
+
+    amount: int = Field(
+        gt=0,
+        description="Amount in tyiyn. Example: 100 = 1 som.",
+        examples=[100],
+    )
+    branch: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "MKassa branch ID. Optional for dynamic QR when the MKassa key is bound "
+            "to a default branch."
+        ),
+        examples=[236366],
+    )
+    cashier: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "MKassa cashier ID. Optional for dynamic QR when the MKassa key is bound "
+            "to a default cashier."
+        ),
+        examples=[130610],
+    )
+    is_long_living: bool | None = Field(
+        default=None,
+        description="Requests increased payment waiting time if MKassa enabled it for the account.",
+        examples=[True],
+    )
 
     @field_validator("amount", mode="before")
     @classmethod
@@ -123,10 +189,64 @@ class DynamicQRCreate(MetadataRequestMixin):
 
 
 class StaticQRCreate(MetadataRequestMixin):
-    branch: int = Field(gt=0)
-    cashier: int = Field(gt=0)
-    amount: int | None = Field(default=None, gt=0, description="Amount in tyiyn")
-    change_amount: bool | None = None
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "summary": "Static QR with fixed amount",
+                    "value": {
+                        "branch": 236366,
+                        "cashier": 130610,
+                        "amount": 100,
+                        "change_amount": False,
+                        "metadata": {
+                            "invoice_number": "TIGER-FACTURE-1001",
+                            "source": "tiger",
+                        },
+                    },
+                },
+                {
+                    "summary": "Static QR with accounting metadata",
+                    "value": {
+                        "branch": 236366,
+                        "cashier": 130610,
+                        "amount": 100,
+                        "change_amount": False,
+                        "metadata": {
+                            "payer_code": "12345678901234",
+                            "payer_full_name": "ОсОО Тест",
+                            "invoice_number": "TIGER-FACTURE-1001",
+                        },
+                    },
+                },
+            ]
+        }
+    )
+
+    branch: int = Field(
+        gt=0,
+        description="Required MKassa branch ID for static QR.",
+        examples=[236366],
+    )
+    cashier: int = Field(
+        gt=0,
+        description="Required MKassa cashier ID for static QR.",
+        examples=[130610],
+    )
+    amount: int | None = Field(
+        default=None,
+        gt=0,
+        description="Optional amount in tyiyn. Example: 100 = 1 som.",
+        examples=[100],
+    )
+    change_amount: bool | None = Field(
+        default=None,
+        description=(
+            "Whether payer may edit amount during payment. If amount and change_amount "
+            "are omitted, MKassa creates a static QR without fixed amount."
+        ),
+        examples=[False],
+    )
 
     @field_validator("amount", mode="before")
     @classmethod
@@ -135,15 +255,15 @@ class StaticQRCreate(MetadataRequestMixin):
 
 
 class Transaction(APIModel):
-    id: str
-    amount: int | None = None
-    status: str | None = None
-    transaction_type: str | None = None
-    created_at: datetime | None = None
-    branch: int | str | None = None
-    cashier: int | str | None = None
-    paid_at: datetime | None = None
-    metadata: Any = None
+    id: str = Field(description="MKassa transaction ID.", examples=["MKSA-..."])
+    amount: int | None = Field(default=None, description="Amount in tyiyn.")
+    status: str | None = Field(default=None, description="MKassa transaction status.")
+    transaction_type: str | None = Field(default=None, description="MKassa transaction type.")
+    created_at: datetime | None = Field(default=None, description="Transaction creation datetime.")
+    branch: int | str | None = Field(default=None, description="MKassa branch ID or name.")
+    cashier: int | str | None = Field(default=None, description="MKassa cashier ID or name.")
+    paid_at: datetime | None = Field(default=None, description="Payment datetime if paid.")
+    metadata: Any = Field(default=None, description="Metadata returned by MKassa.")
 
     @field_validator("id", mode="before")
     @classmethod
@@ -162,17 +282,23 @@ class Transaction(APIModel):
 
 
 class DynamicQRResponse(Transaction):
-    payment_token: str
+    payment_token: str = Field(
+        description="Ready-to-encode QR link returned by MKassa.",
+        examples=["https://app.mbank.kg/qr/#000201010212..."],
+    )
 
 
 class StaticQRResponse(APIModel):
-    id: int | str
-    static_qr_link: str
-    branch: int | str | None = None
-    cashier: int | str | None = None
-    amount: int | None = None
-    change_amount: bool | None = None
-    metadata: Any = None
+    id: int | str = Field(description="MKassa static QR ID.")
+    static_qr_link: str = Field(
+        description="Ready-to-encode static QR link returned by MKassa.",
+        examples=["https://app.mbank.kg/qr/#000201010212..."],
+    )
+    branch: int | str | None = Field(default=None, description="MKassa branch ID or name.")
+    cashier: int | str | None = Field(default=None, description="MKassa cashier ID or name.")
+    amount: int | None = Field(default=None, description="Amount in tyiyn.")
+    change_amount: bool | None = Field(default=None, description="Whether amount is editable.")
+    metadata: Any = Field(default=None, description="Metadata returned by MKassa.")
 
     @field_validator("amount", mode="before")
     @classmethod
@@ -241,12 +367,32 @@ class BranchListResponse(APIModel):
 
 
 class WebhookPayload(APIModel):
-    id: str
-    status: str
-    amount: int | None = None
-    created_at: datetime | None = None
-    paid_at: datetime | None = None
-    metadata: Any = None
+    model_config = ConfigDict(
+        extra="allow",
+        populate_by_name=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "id": "MKSA-99f1e3bd71134019af970fc429af8448",
+                    "status": "paid",
+                    "amount": "100",
+                    "created_at": "2026-05-25T09:28:12.639897+06:00",
+                    "paid_at": "2026-05-25T09:28:30+06:00",
+                    "metadata": {
+                        "invoice_number": "TIGER-FACTURE-1001",
+                        "source": "tiger",
+                    },
+                }
+            ]
+        },
+    )
+
+    id: str = Field(description="MKassa transaction ID.")
+    status: str = Field(description="MKassa transaction status.")
+    amount: int | None = Field(default=None, description="Amount in tyiyn.")
+    created_at: datetime | None = Field(default=None, description="Transaction creation datetime.")
+    paid_at: datetime | None = Field(default=None, description="Payment datetime if paid.")
+    metadata: Any = Field(default=None, description="Metadata returned by MKassa.")
 
     @field_validator("id", "status", mode="before")
     @classmethod
