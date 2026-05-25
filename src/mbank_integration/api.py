@@ -6,7 +6,7 @@ from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Form, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 
 from mbank_integration.client import AsyncMKassaClient, MKassaAPIError, MKassaTransportError
@@ -63,6 +63,169 @@ OPENAPI_TAGS = [
         "description": "Health and integration-key diagnostics.",
     },
 ]
+
+DEMO_HTML = """
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MBank MKassa Demo</title>
+  <style>
+    body { background: white; color: black; font-family: sans-serif; }
+    input { margin-top: 4px; }
+    pre { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>MBank MKassa Demo</h1>
+  <p>Минимальная страница для ручной проверки QR-интеграции.</p>
+  <p><a href="/docs">Swagger</a> | <a href="/health">Health</a></p>
+
+  <section>
+    <h2>Ключ интеграции</h2>
+    <p>Вставьте ключ, который выдали для 1С/сайта/POS.</p>
+    <label>X-Integration-Key<br>
+      <input id="integrationKey" type="password" size="60" autocomplete="off">
+    </label>
+    <button type="button" onclick="saveKey()">Сохранить ключ в браузере</button>
+    <button type="button" onclick="clearKey()">Очистить</button>
+  </section>
+
+  <hr>
+
+  <section>
+    <h2>Динамический QR</h2>
+    <form id="dynamicForm">
+      <p><label>Сумма в тыйынах<br><input name="amount" type="number" value="100" required></label></p>
+      <p><label>Код фактуры Tiger<br><input name="invoice_number" value="TIGER-FACTURE-1001" size="40"></label></p>
+      <p><label>Источник<br><input name="source" value="tiger"></label></p>
+      <p><label>Branch, если нужно<br><input name="branch" type="number"></label></p>
+      <p><label>Cashier, если нужно<br><input name="cashier" type="number"></label></p>
+      <p><label><input name="is_long_living" type="checkbox"> is_long_living</label></p>
+      <button type="submit">Создать динамический QR</button>
+    </form>
+  </section>
+
+  <hr>
+
+  <section>
+    <h2>Статический QR</h2>
+    <form id="staticForm">
+      <p><label>Branch<br><input name="branch" type="number" value="236366" required></label></p>
+      <p><label>Cashier<br><input name="cashier" type="number" value="130610" required></label></p>
+      <p><label>Сумма в тыйынах<br><input name="amount" type="number" value="100"></label></p>
+      <p><label><input name="change_amount" type="checkbox"> Разрешить менять сумму</label></p>
+      <p><label>Код фактуры Tiger<br><input name="invoice_number" value="TIGER-FACTURE-1001" size="40"></label></p>
+      <p><label>Источник<br><input name="source" value="tiger"></label></p>
+      <p><label>ИНН / код плательщика<br><input name="payer_code" size="30"></label></p>
+      <p><label>Наименование плательщика<br><input name="payer_full_name" size="50"></label></p>
+      <button type="submit">Создать статический QR</button>
+    </form>
+  </section>
+
+  <hr>
+
+  <section>
+    <h2>Статус и отмена</h2>
+    <p><label>ID транзакции<br><input id="transactionId" size="60"></label></p>
+    <button type="button" onclick="getStatus()">Проверить статус</button>
+    <button type="button" onclick="cancelTransaction()">Отменить dynamic QR</button>
+  </section>
+
+  <hr>
+
+  <section>
+    <h2>Результат</h2>
+    <p id="links"></p>
+    <pre id="output"></pre>
+  </section>
+
+  <script>
+    const keyInput = document.getElementById("integrationKey");
+    const output = document.getElementById("output");
+    const links = document.getElementById("links");
+    const txInput = document.getElementById("transactionId");
+
+    keyInput.value = localStorage.getItem("integrationKey") || "";
+
+    function saveKey() {
+      localStorage.setItem("integrationKey", keyInput.value);
+      show({ ok: true, message: "Ключ сохранен в браузере" });
+    }
+
+    function clearKey() {
+      localStorage.removeItem("integrationKey");
+      keyInput.value = "";
+      show({ ok: true, message: "Ключ очищен" });
+    }
+
+    function headers() {
+      return { "X-Integration-Key": keyInput.value };
+    }
+
+    function show(data) {
+      output.textContent = JSON.stringify(data, null, 2);
+      links.innerHTML = "";
+      const qrLink = data.payment_token || data.static_qr_link;
+      if (data.id) {
+        txInput.value = data.id;
+      }
+      if (qrLink) {
+        const link = document.createElement("a");
+        link.href = qrLink;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        link.textContent = "Открыть ссылку QR";
+        links.appendChild(link);
+      }
+    }
+
+    async function submitForm(path, form) {
+      const formData = new FormData(form);
+      for (const [key, value] of Array.from(formData.entries())) {
+        if (value === "") formData.delete(key);
+      }
+      const response = await fetch(path, {
+        method: "POST",
+        headers: headers(),
+        body: formData
+      });
+      const data = await response.json();
+      show(data);
+    }
+
+    document.getElementById("dynamicForm").addEventListener("submit", function (event) {
+      event.preventDefault();
+      submitForm("/api/v1/qr/dynamic/form", event.currentTarget).catch(err => show({ error: String(err) }));
+    });
+
+    document.getElementById("staticForm").addEventListener("submit", function (event) {
+      event.preventDefault();
+      submitForm("/api/v1/qr/static/form", event.currentTarget).catch(err => show({ error: String(err) }));
+    });
+
+    async function getStatus() {
+      const id = txInput.value.trim();
+      if (!id) return show({ error: "Укажите ID транзакции" });
+      const response = await fetch(`/api/v1/transactions/${encodeURIComponent(id)}`, {
+        headers: headers()
+      });
+      show(await response.json());
+    }
+
+    async function cancelTransaction() {
+      const id = txInput.value.trim();
+      if (!id) return show({ error: "Укажите ID транзакции" });
+      const response = await fetch(`/api/v1/transactions/${encodeURIComponent(id)}/cancel`, {
+        method: "PUT",
+        headers: headers()
+      });
+      show(await response.json());
+    }
+  </script>
+</body>
+</html>
+"""
 
 
 def create_app(
@@ -124,6 +287,27 @@ def create_app(
                 remote_addr=remote_addr,
             )
         return response
+
+    @app.get(
+        "/",
+        response_class=HTMLResponse,
+        tags=["system"],
+        summary="Demo UI",
+        description="Minimal HTML page for manual QR testing.",
+        include_in_schema=False,
+    )
+    async def demo_root() -> HTMLResponse:
+        return HTMLResponse(DEMO_HTML)
+
+    @app.get(
+        "/demo",
+        response_class=HTMLResponse,
+        tags=["system"],
+        summary="Demo UI",
+        description="Minimal HTML page for manual QR testing.",
+    )
+    async def demo() -> HTMLResponse:
+        return HTMLResponse(DEMO_HTML)
 
     @app.get(
         "/health",

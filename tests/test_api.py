@@ -74,6 +74,22 @@ def test_integration_key_protects_control_endpoints(tmp_path: Path) -> None:
     assert authorized.json()["id"] == "MKSA-1"
 
 
+def test_demo_page_renders(tmp_path: Path) -> None:
+    app = create_app(
+        settings=make_settings(tmp_path / "app.db"),
+        client=FakeMKassaClient(),
+        store=SQLiteMKassaStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/demo")
+
+    assert response.status_code == 200
+    assert "MBank MKassa Demo" in response.text
+    assert "dynamicForm" in response.text
+    assert "staticForm" in response.text
+
+
 def test_dynamic_qr_form_builds_payload_from_fields(tmp_path: Path) -> None:
     fake_client = FakeMKassaClient()
     app = create_app(

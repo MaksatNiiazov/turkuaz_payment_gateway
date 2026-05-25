@@ -32,6 +32,12 @@ Swagger UI:
 http://localhost:8010/docs
 ```
 
+Простейшая страница для ручного тестирования:
+
+```text
+http://localhost:8010/demo
+```
+
 В Swagger нажмите `Authorize`, вставьте выданный ключ в `X-Integration-Key`.
 Для ручного тестирования используйте `/api/v1/qr/dynamic/form` и `/api/v1/qr/static/form`: там можно заполнять отдельные поля без JSON.
 JSON endpoint'ы `/api/v1/qr/dynamic` и `/api/v1/qr/static` оставлены для 1С, сайта, POS и других системных интеграций.
