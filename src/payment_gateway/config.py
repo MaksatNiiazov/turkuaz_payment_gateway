@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     mkassa_base_url: str = Field("https://api.mkassa.kg", alias="MKASSA_BASE_URL")
     mkassa_api_key: SecretStr = Field(..., alias="MKASSA_API_KEY")
     integration_keys: SecretStr | None = Field(None, alias="INTEGRATION_KEYS")
+    payment_admin_api_key: SecretStr | None = Field(None, alias="PAYMENT_ADMIN_API_KEY")
     webhook_shared_secret: SecretStr | None = Field(None, alias="WEBHOOK_SHARED_SECRET")
     database_url: str = Field("sqlite:///./data/payment_gateway.db", alias="DATABASE_URL")
     auto_create_schema: bool = Field(True, alias="AUTO_CREATE_SCHEMA")

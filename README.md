@@ -34,15 +34,24 @@ Swagger UI:
 http://localhost:8010/docs
 ```
 
-Простейшая страница для ручного тестирования:
+Базовые страницы просмотра операций:
 
 ```text
-http://localhost:8010/demo
+http://localhost:8010/ui/transactions
+http://localhost:8010/ui/webhooks
+http://localhost:8010/ui/access-events
 ```
 
+Отдельный React admin интерфейс:
+
+```text
+http://localhost:6750
+```
+
+React admin сам ходит в backend через `/api`. Отдельный admin-ключ для этих запросов задается на стороне frontend-сервиса в `PAYMENT_ADMIN_API_KEY`; в браузере его вводить не нужно. Внешние интеграционные ключи `INTEGRATION_KEYS` React не использует.
+
 В Swagger нажмите `Authorize`, вставьте выданный ключ в `X-Integration-Key`.
-Для ручного тестирования используйте `/api/v1/qr/dynamic/form` и `/api/v1/qr/static/form`: там можно заполнять отдельные поля без JSON.
-Страница `/demo` также показывает PNG QR после создания оплаты и умеет сделать быстрый QR-предпросмотр без запроса в MKassa.
+Для ручного тестирования используйте раздел `QR Demo` в React admin или `/api/v1/qr/dynamic/form` и `/api/v1/qr/static/form` в Swagger.
 JSON endpoint'ы `/api/v1/qr/dynamic` и `/api/v1/qr/static` оставлены для 1С, сайта, POS и других системных интеграций.
 
 Проверка:
@@ -59,6 +68,12 @@ docker compose up --build
 ```
 
 Compose поднимает приложение и PostgreSQL. Сервис будет доступен на `http://localhost:8010`.
+React admin будет доступен на `http://localhost:6750`.
+Для admin-интерфейса можно передать ключ так:
+
+```bash
+PAYMENT_ADMIN_API_KEY=secret-for-admin docker compose up --build
+```
 
 Для локального запуска без Docker можно оставить SQLite:
 
@@ -83,7 +98,7 @@ AUTO_CREATE_SCHEMA=false DATABASE_URL=postgresql+psycopg://payments:<password>@<
 
 ## Основные endpoint'ы
 
-Все endpoint'ы, кроме `/health` и `/api/v1/webhooks/mkassa`, можно защитить пулом ключей `INTEGRATION_KEYS`.
+Интеграционные endpoint'ы для 1С, сайта, POS и ERP защищаются пулом ключей `INTEGRATION_KEYS`.
 
 ```env
 INTEGRATION_KEYS=1c:secret-for-1c,site:secret-for-site,pos:secret-for-pos
@@ -96,6 +111,8 @@ X-Integration-Key: secret-for-1c
 ```
 
 Сервис распознает владельца ключа как внутреннюю метку `integration_name=1c`. Это не логин и не передается клиентом отдельно. Для одного ключа используйте тот же формат, например `INTEGRATION_KEYS=1c:secret-for-1c`.
+
+Админские endpoints `/api/v1/local/...` защищаются отдельно через `PAYMENT_ADMIN_API_KEY`. React-сервис добавляет его к backend-запросам как `X-Admin-Key`; этот ключ не нужно передавать интеграторам.
 
 | Метод | URL | Назначение |
 | --- | --- | --- |

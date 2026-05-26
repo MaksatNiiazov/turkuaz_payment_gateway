@@ -46,6 +46,13 @@ integration_key_scheme = APIKeyHeader(
     ),
 )
 
+admin_key_scheme = APIKeyHeader(
+    name="X-Admin-Key",
+    scheme_name="X-Admin-Key",
+    auto_error=False,
+    description="Private key used only by the admin web service.",
+)
+
 OPENAPI_TAGS = [
     {
         "name": "qr",
@@ -73,202 +80,230 @@ OPENAPI_TAGS = [
     },
 ]
 
-DEMO_HTML = """
+ADMIN_HTML = """
 <!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <title>Payment Gateway Demo</title>
+  <title>Payment Gateway Admin</title>
   <style>
-    body { background: white; color: black; font-family: sans-serif; }
-    input { margin-top: 4px; }
-    pre { white-space: pre-wrap; }
+    body { background: white; color: black; font-family: sans-serif; margin: 16px; }
+    nav a { margin-right: 12px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #bbb; padding: 6px; text-align: left; vertical-align: top; }
+    th { background: #f2f2f2; }
+    input, select, button { margin: 4px 4px 4px 0; }
+    pre { white-space: pre-wrap; max-width: 420px; margin: 0; }
+    .muted { color: #555; }
   </style>
 </head>
 <body>
-  <h1>Payment Gateway Demo</h1>
-  <p>Минимальная страница для ручной проверки QR-интеграции.</p>
-  <p><a href="/docs">Swagger</a> | <a href="/health">Health</a></p>
+  <h1>Payment Gateway Admin</h1>
+  <nav>
+    <a href="/ui/transactions">Транзакции</a>
+    <a href="/ui/webhooks">Webhook события</a>
+    <a href="/ui/access-events">Доступы</a>
+    <a href="/docs">Swagger</a>
+  </nav>
 
   <section>
-    <h2>Ключ интеграции</h2>
-    <p>Вставьте ключ, который выдали для 1С/сайта/POS.</p>
-    <label>X-Integration-Key<br>
-      <input id="integrationKey" type="password" size="60" autocomplete="off">
+    <h2>Admin ключ</h2>
+    <label>X-Admin-Key<br>
+      <input id="adminKey" type="password" size="60" autocomplete="off">
     </label>
-    <button type="button" onclick="saveKey()">Сохранить ключ в браузере</button>
+    <button type="button" onclick="saveKey()">Сохранить</button>
     <button type="button" onclick="clearKey()">Очистить</button>
+    <span id="keyState" class="muted"></span>
   </section>
 
   <hr>
 
-  <section>
-    <h2>Динамический QR</h2>
-    <form id="dynamicForm">
-      <p><label>Сумма в тыйынах<br><input name="amount" type="number" value="100" required></label></p>
-      <p><label>Код фактуры Tiger<br><input name="invoice_number" value="TIGER-FACTURE-1001" size="40"></label></p>
-      <p><label>Источник<br><input name="source" value="tiger"></label></p>
-      <p><label>Branch, если нужно<br><input name="branch" type="number"></label></p>
-      <p><label>Cashier, если нужно<br><input name="cashier" type="number"></label></p>
-      <p><label><input name="is_long_living" type="checkbox"> is_long_living</label></p>
-      <button type="submit">Создать динамический QR</button>
-    </form>
-  </section>
-
-  <hr>
-
-  <section>
-    <h2>Статический QR</h2>
-    <form id="staticForm">
-      <p><label>Branch<br><input name="branch" type="number" value="236366" required></label></p>
-      <p><label>Cashier<br><input name="cashier" type="number" value="130610" required></label></p>
-      <p><label>Сумма в тыйынах<br><input name="amount" type="number" value="100"></label></p>
-      <p><label><input name="change_amount" type="checkbox"> Разрешить менять сумму</label></p>
-      <p><label>Код фактуры Tiger<br><input name="invoice_number" value="TIGER-FACTURE-1001" size="40"></label></p>
-      <p><label>Источник<br><input name="source" value="tiger"></label></p>
-      <p><label>ИНН / код плательщика<br><input name="payer_code" size="30"></label></p>
-      <p><label>Наименование плательщика<br><input name="payer_full_name" size="50"></label></p>
-      <button type="submit">Создать статический QR</button>
-    </form>
-  </section>
-
-  <hr>
-
-  <section>
-    <h2>Статус и отмена</h2>
-    <p><label>ID транзакции<br><input id="transactionId" size="60"></label></p>
-    <button type="button" onclick="getStatus()">Проверить статус</button>
-    <button type="button" onclick="cancelTransaction()">Отменить dynamic QR</button>
-  </section>
-
-  <hr>
-
-  <section>
-    <h2>Предпросмотр QR</h2>
-    <p><label>Текст или ссылка<br><input id="previewQrData" value="https://example.com/payment-gateway-demo" size="60"></label></p>
-    <button type="button" onclick="previewQr()">Сгенерировать QR</button>
-  </section>
-
-  <hr>
-
-  <section>
-    <h2>Результат</h2>
-    <p id="links"></p>
-    <p id="qrImage"></p>
-    <pre id="output"></pre>
-  </section>
+  <section id="controls"></section>
+  <section id="content"></section>
 
   <script>
-    const keyInput = document.getElementById("integrationKey");
-    const output = document.getElementById("output");
-    const links = document.getElementById("links");
-    const qrImage = document.getElementById("qrImage");
-    const txInput = document.getElementById("transactionId");
+    const keyInput = document.getElementById("adminKey");
+    const keyState = document.getElementById("keyState");
+    const controls = document.getElementById("controls");
+    const content = document.getElementById("content");
 
-    keyInput.value = localStorage.getItem("integrationKey") || "";
+    keyInput.value = localStorage.getItem("adminKey") || "";
+    updateKeyState();
 
     function saveKey() {
-      localStorage.setItem("integrationKey", keyInput.value);
-      show({ ok: true, message: "Ключ сохранен в браузере" });
+      localStorage.setItem("adminKey", keyInput.value);
+      updateKeyState();
+      loadPage();
     }
 
     function clearKey() {
-      localStorage.removeItem("integrationKey");
+      localStorage.removeItem("adminKey");
       keyInput.value = "";
-      show({ ok: true, message: "Ключ очищен" });
+      updateKeyState();
+    }
+
+    function updateKeyState() {
+      keyState.textContent = keyInput.value ? "ключ задан" : "ключ не задан";
     }
 
     function headers() {
-      return { "X-Integration-Key": keyInput.value };
+      return { "X-Admin-Key": keyInput.value };
     }
 
-    function show(data) {
-      output.textContent = JSON.stringify(data, null, 2);
-      links.innerHTML = "";
-      qrImage.innerHTML = "";
-      const qrLink = data.payment_token || data.static_qr_link;
-      if (data.id) {
-        txInput.value = data.id;
-      }
-      if (qrLink) {
-        const link = document.createElement("a");
-        link.href = qrLink;
-        link.target = "_blank";
-        link.rel = "noreferrer";
-        link.textContent = "Открыть ссылку QR";
-        links.appendChild(link);
-        renderQr(qrLink).catch(err => show({ error: String(err), original_response: data }));
-      }
+    function text(value) {
+      if (value === null || value === undefined) return "";
+      if (typeof value === "object") return JSON.stringify(value, null, 2);
+      return String(value);
     }
 
-    async function renderQr(qrLink) {
-      qrImage.innerHTML = "";
-      const response = await fetch(`/api/v1/qr/render?data=${encodeURIComponent(qrLink)}`, {
-        headers: headers()
-      });
-      if (!response.ok) {
-        throw new Error(`QR render failed: HTTP ${response.status}`);
+    function cell(value) {
+      const td = document.createElement("td");
+      if (typeof value === "object" && value !== null) {
+        const pre = document.createElement("pre");
+        pre.textContent = text(value);
+        td.appendChild(pre);
+      } else {
+        td.textContent = text(value);
       }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const image = document.createElement("img");
-      image.src = url;
-      image.alt = "QR code";
-      image.width = 260;
-      image.height = 260;
-      qrImage.appendChild(image);
+      return td;
     }
 
-    async function previewQr() {
-      const value = document.getElementById("previewQrData").value.trim();
-      if (!value) return show({ error: "Укажите текст или ссылку для QR" });
-      output.textContent = JSON.stringify({ qr_payload: value }, null, 2);
-      links.innerHTML = "";
-      await renderQr(value);
+    function renderTable(columns, rows) {
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      for (const column of columns) {
+        const th = document.createElement("th");
+        th.textContent = column.label;
+        headRow.appendChild(th);
+      }
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+
+      const tbody = document.createElement("tbody");
+      for (const row of rows) {
+        const tr = document.createElement("tr");
+        for (const column of columns) {
+          tr.appendChild(cell(row[column.key]));
+        }
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      return table;
     }
 
-    async function submitForm(path, form) {
-      const formData = new FormData(form);
-      for (const [key, value] of Array.from(formData.entries())) {
-        if (value === "") formData.delete(key);
-      }
-      const response = await fetch(path, {
-        method: "POST",
-        headers: headers(),
-        body: formData
-      });
+    async function fetchJson(path) {
+      const response = await fetch(path, { headers: headers() });
       const data = await response.json();
-      show(data);
+      if (!response.ok) {
+        throw new Error(data.detail || data.message || `HTTP ${response.status}`);
+      }
+      return data;
     }
 
-    document.getElementById("dynamicForm").addEventListener("submit", function (event) {
-      event.preventDefault();
-      submitForm("/api/v1/qr/dynamic/form", event.currentTarget).catch(err => show({ error: String(err) }));
-    });
+    function renderControls(kind) {
+      const previousLimit = document.getElementById("limit")?.value || "50";
+      const previousStatus = document.getElementById("status")?.value || "";
+      const previousProvider = document.getElementById("provider")?.value || "";
+      controls.innerHTML = "";
+      const title = document.createElement("h2");
+      title.textContent = kind;
+      controls.appendChild(title);
 
-    document.getElementById("staticForm").addEventListener("submit", function (event) {
-      event.preventDefault();
-      submitForm("/api/v1/qr/static/form", event.currentTarget).catch(err => show({ error: String(err) }));
-    });
+      const limit = document.createElement("input");
+      limit.id = "limit";
+      limit.type = "number";
+      limit.min = "1";
+      limit.max = "500";
+      limit.value = previousLimit;
+      controls.append("Лимит: ", limit, " ");
 
-    async function getStatus() {
-      const id = txInput.value.trim();
-      if (!id) return show({ error: "Укажите ID транзакции" });
-      const response = await fetch(`/api/v1/transactions/${encodeURIComponent(id)}`, {
-        headers: headers()
+      if (kind === "Транзакции") {
+        const status = document.createElement("input");
+        status.id = "status";
+        status.placeholder = "status";
+        status.value = previousStatus;
+        const provider = document.createElement("input");
+        provider.id = "provider";
+        provider.placeholder = "provider";
+        provider.value = previousProvider;
+        controls.append(" Статус: ", status, " Provider: ", provider, " ");
+      }
+
+      const refresh = document.createElement("button");
+      refresh.type = "button";
+      refresh.textContent = "Обновить";
+      refresh.onclick = loadPage;
+      controls.appendChild(refresh);
+    }
+
+    async function loadTransactions() {
+      renderControls("Транзакции");
+      const params = new URLSearchParams({ limit: document.getElementById("limit").value || "50" });
+      const status = document.getElementById("status").value.trim();
+      const provider = document.getElementById("provider").value.trim();
+      if (status) params.set("status", status);
+      if (provider) params.set("provider", provider);
+      const rows = await fetchJson(`/api/v1/local/transactions?${params.toString()}`);
+      const columns = [
+        { key: "id", label: "ID" },
+        { key: "provider", label: "Provider" },
+        { key: "status", label: "Status" },
+        { key: "transaction_type", label: "Type" },
+        { key: "amount", label: "Amount" },
+        { key: "branch", label: "Branch" },
+        { key: "cashier", label: "Cashier" },
+        { key: "metadata", label: "Metadata" },
+        { key: "updated_at", label: "Updated" },
+      ];
+      content.replaceChildren(renderTable(columns, rows));
+    }
+
+    async function loadWebhooks() {
+      renderControls("Webhook события");
+      const params = new URLSearchParams({ limit: document.getElementById("limit").value || "50" });
+      const rows = await fetchJson(`/api/v1/local/webhooks?${params.toString()}`);
+      const columns = [
+        { key: "id", label: "ID" },
+        { key: "provider", label: "Provider" },
+        { key: "transaction_id", label: "Transaction" },
+        { key: "status", label: "Status" },
+        { key: "received_at", label: "Received" },
+        { key: "payload", label: "Payload" },
+      ];
+      content.replaceChildren(renderTable(columns, rows));
+    }
+
+    async function loadAccessEvents() {
+      renderControls("Доступы");
+      const params = new URLSearchParams({ limit: document.getElementById("limit").value || "50" });
+      const rows = await fetchJson(`/api/v1/local/access-events?${params.toString()}`);
+      const columns = [
+        { key: "id", label: "ID" },
+        { key: "integration_name", label: "Integration" },
+        { key: "method", label: "Method" },
+        { key: "path", label: "Path" },
+        { key: "status_code", label: "Code" },
+        { key: "remote_addr", label: "Remote" },
+        { key: "created_at", label: "Created" },
+      ];
+      content.replaceChildren(renderTable(columns, rows));
+    }
+
+    function loadPage() {
+      content.textContent = "Загрузка...";
+      const path = window.location.pathname;
+      const loader = path.includes("/webhooks")
+        ? loadWebhooks
+        : path.includes("/access-events")
+          ? loadAccessEvents
+          : loadTransactions;
+      loader().catch(err => {
+        content.textContent = `Ошибка: ${err.message}`;
       });
-      show(await response.json());
     }
 
-    async function cancelTransaction() {
-      const id = txInput.value.trim();
-      if (!id) return show({ error: "Укажите ID транзакции" });
-      const response = await fetch(`/api/v1/transactions/${encodeURIComponent(id)}/cancel`, {
-        method: "PUT",
-        headers: headers()
-      });
-      show(await response.json());
-    }
+    loadPage();
   </script>
 </body>
 </html>
@@ -349,25 +384,44 @@ def create_app(
         return response
 
     @app.get(
-        "/",
+        "/ui",
         response_class=HTMLResponse,
         tags=["system"],
-        summary="Demo UI",
-        description="Minimal HTML page for manual QR testing.",
-        include_in_schema=False,
+        summary="Admin UI",
+        description="Basic browser pages for local transactions, webhooks, and API access events.",
     )
-    async def demo_root() -> HTMLResponse:
-        return HTMLResponse(DEMO_HTML)
+    async def admin_ui_root() -> HTMLResponse:
+        return HTMLResponse(ADMIN_HTML)
 
     @app.get(
-        "/demo",
+        "/ui/transactions",
         response_class=HTMLResponse,
         tags=["system"],
-        summary="Demo UI",
-        description="Minimal HTML page for manual QR testing.",
+        summary="Transactions UI",
+        description="Basic browser page for locally saved transactions.",
     )
-    async def demo() -> HTMLResponse:
-        return HTMLResponse(DEMO_HTML)
+    async def transactions_ui() -> HTMLResponse:
+        return HTMLResponse(ADMIN_HTML)
+
+    @app.get(
+        "/ui/webhooks",
+        response_class=HTMLResponse,
+        tags=["system"],
+        summary="Webhooks UI",
+        description="Basic browser page for locally saved webhook events.",
+    )
+    async def webhooks_ui() -> HTMLResponse:
+        return HTMLResponse(ADMIN_HTML)
+
+    @app.get(
+        "/ui/access-events",
+        response_class=HTMLResponse,
+        tags=["system"],
+        summary="Access events UI",
+        description="Basic browser page for integration access audit events.",
+    )
+    async def access_events_ui() -> HTMLResponse:
+        return HTMLResponse(ADMIN_HTML)
 
     @app.get(
         "/health",
@@ -381,6 +435,10 @@ def create_app(
     protected_router = APIRouter(
         prefix="/api/v1",
         dependencies=[Depends(require_integration_key)],
+    )
+    admin_router = APIRouter(
+        prefix="/api/v1",
+        dependencies=[Depends(require_admin_key)],
     )
 
     @protected_router.post(
@@ -560,19 +618,7 @@ def create_app(
             ),
         ],
     ) -> StreamingResponse:
-        qr = qrcode.QRCode(
-            version=None,
-            error_correction=qrcode.constants.ERROR_CORRECT_M,
-            box_size=8,
-            border=4,
-        )
-        qr.add_data(data)
-        qr.make(fit=True)
-        image = qr.make_image(fill_color="black", back_color="white")
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
-        buffer.seek(0)
-        return StreamingResponse(buffer, media_type="image/png")
+        return render_qr_png(data)
 
     @protected_router.post(
         "/qr/static/form",
@@ -752,7 +798,28 @@ def create_app(
     async def current_integration(request: Request) -> dict[str, str]:
         return {"integration_name": request.state.integration_name}
 
-    @protected_router.get(
+    @admin_router.get(
+        "/local/transactions",
+        tags=["local"],
+        summary="List locally saved transactions",
+        description="Returns locally saved transaction states from callbacks or API calls.",
+    )
+    async def local_transactions(
+        request: Request,
+        limit: Annotated[int, Query(ge=1, le=500, description="Maximum rows to return.")] = 50,
+        provider: Annotated[str | None, Query(description="Optional provider filter.")] = None,
+        status_filter: Annotated[
+            str | None,
+            Query(alias="status", description="Optional transaction status filter."),
+        ] = None,
+    ) -> list[dict]:
+        return storage(request).list_transactions(
+            limit=limit,
+            provider=provider,
+            status=status_filter,
+        )
+
+    @admin_router.get(
         "/local/transactions/{transaction_id}",
         tags=["local"],
         summary="Get locally saved transaction",
@@ -764,7 +831,70 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
         return item
 
-    @protected_router.get(
+    @admin_router.put(
+        "/local/transactions/{transaction_id}/refresh",
+        response_model=Transaction,
+        tags=["local"],
+        summary="Refresh local transaction status",
+        description="Reads the current transaction state from MKassa and saves it locally.",
+    )
+    async def refresh_local_transaction(request: Request, transaction_id: str) -> Transaction:
+        if storage(request).get_transaction(transaction_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+        return await payments(request).get_transaction(transaction_id)
+
+    @admin_router.put(
+        "/local/transactions/{transaction_id}/cancel",
+        response_model=CancelResponse,
+        tags=["local"],
+        summary="Cancel local transaction from admin UI",
+        description=(
+            "Admin-only wrapper around MKassa dynamic QR cancellation. "
+            "Use for unpaid dynamic QR transactions shown in the admin UI."
+        ),
+    )
+    async def cancel_local_transaction(request: Request, transaction_id: str) -> CancelResponse:
+        item = storage(request).get_transaction(transaction_id)
+        if item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+
+        fresh = await payments(request).get_transaction(transaction_id)
+        if fresh.transaction_type != "qr" or fresh.status not in {
+            "inited",
+            "waiting",
+            "qr_scanned",
+        }:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Transaction cannot be canceled from status {fresh.status or 'unknown'}",
+            )
+        return await payments(request).cancel_transaction(transaction_id)
+
+    @admin_router.post(
+        "/admin/qr/dynamic",
+        response_model=DynamicQRResponse,
+        tags=["local"],
+        summary="Create dynamic QR from admin web UI",
+        description="Admin-only QR demo endpoint used by the React admin interface.",
+    )
+    async def create_admin_dynamic_qr(
+        request: Request,
+        payload: DynamicQRCreate,
+    ) -> DynamicQRResponse:
+        return await payments(request).create_dynamic_qr(payload)
+
+    @admin_router.get(
+        "/admin/qr/render",
+        tags=["local"],
+        summary="Render QR image from admin web UI",
+        description="Admin-only PNG QR renderer used by the React admin interface.",
+    )
+    async def render_admin_qr(
+        data: Annotated[str, Query(min_length=1, max_length=4096, description="QR payload.")],
+    ) -> StreamingResponse:
+        return render_qr_png(data)
+
+    @admin_router.get(
         "/local/webhooks",
         tags=["local"],
         summary="List local webhook events",
@@ -776,7 +906,7 @@ def create_app(
     ) -> list[dict]:
         return storage(request).list_webhook_events(limit=limit)
 
-    @protected_router.get(
+    @admin_router.get(
         "/local/access-events",
         tags=["local"],
         summary="List local API access events",
@@ -814,6 +944,7 @@ def create_app(
         return WebhookAck(transaction_id=result.transaction_id, duplicate=result.duplicate)
 
     app.include_router(protected_router)
+    app.include_router(admin_router)
     app.include_router(webhook_router)
     app.add_exception_handler(MKassaAPIError, mkassa_api_error_handler)
     app.add_exception_handler(MKassaTransportError, mkassa_transport_error_handler)
@@ -857,6 +988,22 @@ def build_form_metadata(
     return metadata or None
 
 
+def render_qr_png(data: str) -> StreamingResponse:
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=4,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type="image/png")
+
+
 async def require_integration_key(
     request: Request,
     x_integration_key: str | None = Depends(integration_key_scheme),
@@ -871,6 +1018,23 @@ async def require_integration_key(
                 request.state.integration_name = integration_name
                 return
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid integration key")
+
+
+async def require_admin_key(
+    request: Request,
+    x_admin_key: str | None = Depends(admin_key_scheme),
+) -> None:
+    configured = settings_from_request(request).payment_admin_api_key
+    if configured is None or not configured.get_secret_value().strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Admin key is not configured",
+        )
+    expected = configured.get_secret_value().strip()
+    if x_admin_key and hmac.compare_digest(x_admin_key, expected):
+        request.state.integration_name = "admin"
+        return
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin key")
 
 
 def verify_webhook_secret(settings: Settings, *, candidate: str | None) -> None:

@@ -42,7 +42,9 @@ class PaymentService:
         return response
 
     async def cancel_transaction(self, transaction_id: str) -> CancelResponse:
-        return await self.gateway.provider().cancel_transaction(transaction_id)
+        response = await self.gateway.provider().cancel_transaction(transaction_id)
+        self.store.update_transaction_status(transaction_id, status="canceled")
+        return response
 
     async def list_transactions(
         self,
@@ -83,4 +85,3 @@ class PaymentService:
 
     def save_webhook(self, payload: WebhookPayload) -> WebhookStoreResult:
         return self.store.save_webhook(payload, provider=self.gateway.default_provider)
-

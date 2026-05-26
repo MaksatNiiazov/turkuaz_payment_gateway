@@ -225,6 +225,54 @@ class PaymentStore:
             ).mappings().first()
         return self._transaction_row_to_dict(row) if row else None
 
+    def update_transaction_status(
+        self,
+        transaction_id: str,
+        *,
+        status: str,
+        provider: str = "mkassa",
+    ) -> None:
+        now = self._now()
+        with self.engine.begin() as connection:
+            existing = connection.execute(
+                select(transactions).where(transactions.c.id == transaction_id)
+            ).mappings().first()
+            if existing is None:
+                connection.execute(
+                    transactions.insert().values(
+                        id=transaction_id,
+                        provider=provider,
+                        status=status,
+                        raw_payload=self._json_dumps({"id": transaction_id, "status": status}),
+                        updated_at=now,
+                    )
+                )
+                return
+
+            connection.execute(
+                transactions.update()
+                .where(transactions.c.id == transaction_id)
+                .values(status=status, updated_at=now)
+            )
+
+    def list_transactions(
+        self,
+        *,
+        limit: int = 50,
+        provider: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        capped_limit = min(max(limit, 1), 500)
+        query = select(transactions).order_by(desc(transactions.c.updated_at)).limit(capped_limit)
+        if provider:
+            query = query.where(transactions.c.provider == provider)
+        if status:
+            query = query.where(transactions.c.status == status)
+
+        with self.engine.begin() as connection:
+            rows = connection.execute(query).mappings()
+            return [self._transaction_row_to_dict(row) for row in rows]
+
     def list_webhook_events(self, *, limit: int = 50) -> list[dict[str, Any]]:
         capped_limit = min(max(limit, 1), 500)
         with self.engine.begin() as connection:

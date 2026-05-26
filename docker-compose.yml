@@ -21,11 +21,23 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg://payments:payments_password@postgres:5432/payment_gateway
+      PAYMENT_ADMIN_API_KEY: ${PAYMENT_ADMIN_API_KEY:-admin-dev-key}
     ports:
       - "8010:8010"
     depends_on:
       postgres:
         condition: service_healthy
+
+  payment-admin:
+    build:
+      context: ./frontend
+    environment:
+      VITE_API_PROXY_TARGET: http://payment-gateway:8010
+      PAYMENT_ADMIN_API_KEY: ${PAYMENT_ADMIN_API_KEY:-admin-dev-key}
+    ports:
+      - "6750:6750"
+    depends_on:
+      - payment-gateway
 
 volumes:
   postgres_data:
