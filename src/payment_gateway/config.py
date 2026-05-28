@@ -21,7 +21,6 @@ class Settings(BaseSettings):
     mkassa_api_key: SecretStr = Field(..., alias="MKASSA_API_KEY")
     integration_keys: SecretStr | None = Field(None, alias="INTEGRATION_KEYS")
     payment_admin_api_key: SecretStr | None = Field(None, alias="PAYMENT_ADMIN_API_KEY")
-    webhook_shared_secret: SecretStr | None = Field(None, alias="WEBHOOK_SHARED_SECRET")
     database_url: str = Field("sqlite:///./data/payment_gateway.db", alias="DATABASE_URL")
     auto_create_schema: bool = Field(True, alias="AUTO_CREATE_SCHEMA")
     request_timeout_connect: float = Field(5.0, alias="REQUEST_TIMEOUT_CONNECT", gt=0)

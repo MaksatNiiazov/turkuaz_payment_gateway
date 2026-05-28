@@ -927,19 +927,14 @@ def create_app(
         summary="Receive MKassa webhook",
         description=(
             "Public callback endpoint for MKassa. Does not require `X-Integration-Key`. "
-            "If `WEBHOOK_SHARED_SECRET` is set, add `?secret=<value>` to the callback URL."
+            "MKassa expects a public HTTPS URL on port 443 and a `200 OK` response."
         ),
         response_description="Webhook acceptance acknowledgement.",
     )
     async def mkassa_webhook(
         request: Request,
         payload: WebhookPayload,
-        secret: str | None = None,
     ) -> WebhookAck:
-        verify_webhook_secret(
-            settings_from_request(request),
-            candidate=secret,
-        )
         result = payments(request).save_webhook(payload)
         return WebhookAck(transaction_id=result.transaction_id, duplicate=result.duplicate)
 
@@ -1035,16 +1030,6 @@ async def require_admin_key(
         request.state.integration_name = "admin"
         return
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin key")
-
-
-def verify_webhook_secret(settings: Settings, *, candidate: str | None) -> None:
-    configured = settings.webhook_shared_secret
-    if configured is None or not configured.get_secret_value():
-        return
-    expected = configured.get_secret_value()
-    if candidate and hmac.compare_digest(candidate, expected):
-        return
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook secret")
 
 
 async def mkassa_api_error_handler(_: Request, exc: MKassaAPIError):

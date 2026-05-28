@@ -64,7 +64,6 @@ def make_settings(db_path: Path) -> Settings:
         mkassa_api_key=SecretStr("secret"),
         integration_keys=SecretStr("pos:pos-secret,erp:erp-secret"),
         payment_admin_api_key=SecretStr("admin-secret"),
-        webhook_shared_secret=SecretStr("hook-secret"),
         database_url=f"sqlite:///{db_path}",
     )
 
@@ -429,15 +428,13 @@ def test_webhook_is_idempotent_and_does_not_require_integration_key(tmp_path: Pa
     }
 
     with TestClient(app) as client:
-        missing_secret = client.post("/api/v1/webhooks/mkassa", json=payload)
-        first = client.post("/api/v1/webhooks/mkassa?secret=hook-secret", json=payload)
-        second = client.post("/api/v1/webhooks/mkassa?secret=hook-secret", json=payload)
+        first = client.post("/api/v1/webhooks/mkassa", json=payload)
+        second = client.post("/api/v1/webhooks/mkassa", json=payload)
         local = client.get(
             "/api/v1/local/transactions/MKSA-2",
             headers={"X-Admin-Key": "admin-secret"},
         )
 
-    assert missing_secret.status_code == 401
     assert first.status_code == 200
     assert first.json()["duplicate"] is False
     assert second.status_code == 200

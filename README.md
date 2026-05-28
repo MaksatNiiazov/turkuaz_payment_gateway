@@ -158,12 +158,6 @@ Webhook URL, который нужно передать ответственны
 https://your-domain.example/api/v1/webhooks/mkassa
 ```
 
-Если включен `WEBHOOK_SHARED_SECRET`, передайте URL с secret-параметром:
-
-```text
-https://your-domain.example/api/v1/webhooks/mkassa?secret=your-webhook-secret
-```
-
 По документу MKassa callback поддерживается только на домене с действующим SSL-сертификатом и портом `443`.
 
 ## Проверки
