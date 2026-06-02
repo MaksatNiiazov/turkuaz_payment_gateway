@@ -12,6 +12,6 @@ RUN pip install --no-cache-dir .
 
 RUN mkdir -p /app/data
 
-EXPOSE 8010
+EXPOSE 8502
 
-CMD ["uvicorn", "payment_gateway.main:app", "--host", "0.0.0.0", "--port", "8010"]
+CMD ["uvicorn", "payment_gateway.main:app", "--host", "0.0.0.0", "--port", "8502"]

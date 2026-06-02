@@ -18,35 +18,29 @@ PaymentGateway
         +-- FutureBankProvider -> another bank API
         |
         v
-PaymentStore -> PostgreSQL in production, SQLite in tests/local demo
+PaymentStore -> SQLite for the first production phase, demos, local runs, and tests
 ```
 
 ## Database Choice
 
-Production database: PostgreSQL.
+Current database: SQLite.
 
-SQLite is kept only for tests and quick local runs. The application talks to the
-database through SQLAlchemy, so switching storage is only a `DATABASE_URL`
-change.
+The first production phase uses SQLite for every Turkuaz service. The application
+still talks to the database through SQLAlchemy, so a later storage switch remains
+a `DATABASE_URL` change plus migrations.
 
-Local/test:
+Default:
 
 ```env
 DATABASE_URL=sqlite:///./data/payment_gateway.db
 ```
 
-Production:
-
-```env
-DATABASE_URL=postgresql+psycopg://payments:<password>@postgres:5432/payment_gateway
-```
-
-For local and demo environments, `AUTO_CREATE_SCHEMA=true` can create tables on
-startup. For stricter production deploys, run Alembic first and start the app
+For local, demo, and the first production phase, `AUTO_CREATE_SCHEMA=true` can create tables on
+startup. For stricter deploys, run Alembic first and start the app
 with `AUTO_CREATE_SCHEMA=false`.
 
 ```bash
-DATABASE_URL=postgresql+psycopg://payments:<password>@postgres:5432/payment_gateway \
+DATABASE_URL=sqlite:///./data/payment_gateway.db \
   .venv/bin/python -m alembic upgrade head
 ```
 

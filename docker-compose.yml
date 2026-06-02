@@ -1,44 +1,40 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: payment_gateway
-      POSTGRES_USER: payments
-      POSTGRES_PASSWORD: payments_password
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U payments -d payment_gateway"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-
   payment-gateway:
     build: .
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://payments:payments_password@postgres:5432/payment_gateway
+      DATABASE_URL: sqlite:////app/data/payment_gateway.db
       PAYMENT_ADMIN_API_KEY: ${PAYMENT_ADMIN_API_KEY:-admin-dev-key}
+    volumes:
+      - payment_gateway_data:/app/data
     ports:
-      - "8010:8010"
-    depends_on:
-      postgres:
-        condition: service_healthy
+      - "8502:8502"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8502/api/v1/ready', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
   payment-admin:
     build:
       context: ..
       dockerfile: PaymentGateway/frontend/Dockerfile
     environment:
-      VITE_API_PROXY_TARGET: http://payment-gateway:8010
+      VITE_API_PROXY_TARGET: http://payment-gateway:8502
+      VITE_IDENTITY_PROXY_TARGET: http://host.docker.internal:8500
       PAYMENT_ADMIN_API_KEY: ${PAYMENT_ADMIN_API_KEY:-admin-dev-key}
     ports:
-      - "6750:6750"
+      - "7502:7502"
     depends_on:
-      - payment-gateway
+      payment-gateway:
+        condition: service_healthy
 
 volumes:
-  postgres_data:
+  payment_gateway_data:

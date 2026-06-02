@@ -12,6 +12,6 @@ RUN npm install
 
 COPY PaymentGateway/frontend ./
 
-EXPOSE 6750
+EXPOSE 7502
 
 CMD ["npm", "run", "dev"]

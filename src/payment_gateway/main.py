@@ -8,7 +8,7 @@ app = create_app()
 
 
 def run() -> None:
-    uvicorn.run("payment_gateway.main:app", host="0.0.0.0", port=8010, reload=False)
+    uvicorn.run("payment_gateway.main:app", host="0.0.0.0", port=8502, reload=False)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AppShell, Icon } from "@turkuaz/ui";
+import { AppShell, fetchServiceRegistry, Icon, serviceLinksFromRegistry } from "@turkuaz/ui";
+import type { ServiceRegistryItem } from "@turkuaz/ui";
 import {
   cancelTransaction,
   createDemoDynamicQr,
@@ -10,6 +11,8 @@ import {
   refreshTransaction,
 } from "./api";
 import type { AccessEvent, DynamicQrResponse, TransactionRow, ViewMode, WebhookEvent } from "./types";
+
+const IDENTITY_API_BASE_URL = import.meta.env.VITE_IDENTITY_API_BASE_URL || "/identity-api";
 
 type LoadState = {
   loading: boolean;
@@ -66,17 +69,6 @@ function canCancelTransaction(transaction: TransactionRow | null): boolean {
   );
 }
 
-function openService(value: string): void {
-  const urls: Record<string, string> = {
-    platform: "http://localhost:5174",
-    converter: "http://localhost:5173",
-    payments: "http://localhost:6750",
-    identity: "http://localhost:5177",
-  };
-  const url = urls[value];
-  if (url && value !== "payments") window.location.href = url;
-}
-
 function App() {
   const [view, setView] = useState<ViewMode>("transactions");
   const [limit, setLimit] = useState(50);
@@ -91,6 +83,7 @@ function App() {
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [qrResult, setQrResult] = useState<DynamicQrResponse | null>(null);
   const [qrState, setQrState] = useState<LoadState>({ loading: false, error: null });
+  const [registeredServices, setRegisteredServices] = useState<ServiceRegistryItem[]>([]);
 
   const selectedTransaction = useMemo(
     () => transactions.find((item) => item.id === selectedId) ?? transactions[0] ?? null,
@@ -140,6 +133,20 @@ function App() {
   useEffect(() => {
     if (view !== "qr-demo") void loadData();
   }, [loadData, view]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchServiceRegistry({ identityApiBaseUrl: IDENTITY_API_BASE_URL })
+      .then((services) => {
+        if (!cancelled) setRegisteredServices(services);
+      })
+      .catch(() => {
+        if (!cancelled) setRegisteredServices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleCancel(transaction: TransactionRow) {
     if (!canCancelTransaction(transaction) || cancelingId) return;
@@ -195,6 +202,7 @@ function App() {
       key: "transactions",
       label: "Транзакции",
       icon: "banknote" as const,
+      permissions: ["payments.transactions.read"],
       active: view === "transactions",
       onClick: () => setView("transactions"),
     },
@@ -202,6 +210,7 @@ function App() {
       key: "webhooks",
       label: "Webhooks",
       icon: "webhook" as const,
+      permissions: ["payments.transactions.read"],
       active: view === "webhooks",
       onClick: () => setView("webhooks"),
     },
@@ -209,6 +218,7 @@ function App() {
       key: "access",
       label: "Доступы",
       icon: "database" as const,
+      permissions: ["payments.transactions.read"],
       active: view === "access",
       onClick: () => setView("access"),
     },
@@ -216,63 +226,49 @@ function App() {
       key: "qr-demo",
       label: "QR Demo",
       icon: "qr" as const,
+      permissions: ["payments.qr.create"],
       active: view === "qr-demo",
       onClick: () => setView("qr-demo"),
     },
   ];
+  const pageTitle =
+    view === "transactions"
+      ? "Транзакции"
+      : view === "webhooks"
+        ? "Webhook события"
+        : view === "access"
+          ? "Доступы"
+          : "QR Demo";
+  const pageDescription =
+    view === "qr-demo"
+      ? "Создание тестового динамического QR через backend API."
+      : "Операционная панель для просмотра платежей, callback'ов и обращений интеграций.";
 
   return (
     <AppShell
       brand={{
-        href: "http://localhost:5174",
+        href: "/",
         mark: "T",
         title: "Turkuaz Payments",
         subtitle: "Payment Gateway",
       }}
       navItems={navItems}
       sideLinks={[
-        { href: "http://localhost:5174", label: "Platform", icon: "building" },
-        { href: "http://localhost:5177", label: "Users", icon: "users" },
-        { href: "/docs", label: "Swagger", icon: "file" },
+        ...serviceLinksFromRegistry(registeredServices, { currentServiceCode: "payments" }),
+        { href: "/docs", label: "Swagger", icon: "file", permissions: ["payments.transactions.read", "payments.qr.create"] },
       ]}
+      serviceName="Payments"
+      pageTitle={pageTitle}
+      pageDescription={pageDescription}
+      breadcrumbs={[{ label: "Payments" }, { label: pageTitle }]}
+      headerActions={[
+        { key: "refresh", label: "Обновить", icon: "refresh", onClick: () => void loadData() },
+      ]}
+      environment="local"
+      version="v0.1.0"
+      apiStatus={state.error || qrState.error ? "degraded" : "online"}
+      footerLinks={[{ href: "/docs", label: "Swagger" }]}
     >
-        <header className="topbar">
-          <div>
-            <h1>
-              {view === "transactions"
-                ? "Транзакции"
-                : view === "webhooks"
-                  ? "Webhook события"
-                  : view === "access"
-                    ? "Доступы"
-                    : "QR Demo"}
-            </h1>
-            <p>
-              {view === "qr-demo"
-                ? "Создание тестового динамического QR через backend API."
-                : "Операционная панель для просмотра платежей, callback’ов и обращений интеграций."}
-            </p>
-          </div>
-          <div className="topbar-actions">
-            <select aria-label="Филиал" className="branch-select" defaultValue="all">
-              <option value="all">Все филиалы</option>
-              <option value="head_office">Head Office</option>
-              <option value="bishkek">Бишкек</option>
-            </select>
-            <select
-              aria-label="Сервис"
-              className="branch-select service-select"
-              defaultValue="payments"
-              onChange={(event) => openService(event.target.value)}
-            >
-              <option value="platform">Platform</option>
-              <option value="converter">Converter</option>
-              <option value="payments">Payments</option>
-              <option value="identity">Identity</option>
-            </select>
-          </div>
-        </header>
-
         {view === "qr-demo" ? (
           <QrDemoPanel
             result={qrResult}

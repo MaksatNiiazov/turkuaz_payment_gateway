@@ -88,6 +88,23 @@ def test_integration_key_protects_control_endpoints(tmp_path: Path) -> None:
     assert authorized.json()["id"] == "MKSA-1"
 
 
+def test_service_health_endpoints_do_not_require_integration_key(tmp_path: Path) -> None:
+    app = create_app(
+        settings=make_settings(tmp_path / "app.db"),
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        health = client.get("/api/v1/health")
+        ready = client.get("/api/v1/ready")
+
+    assert health.status_code == 200
+    assert health.json() == {"status": "ok"}
+    assert ready.status_code == 200
+    assert ready.json() == {"status": "ready"}
+
+
 def test_backend_demo_page_is_not_registered(tmp_path: Path) -> None:
     app = create_app(
         settings=make_settings(tmp_path / "app.db"),

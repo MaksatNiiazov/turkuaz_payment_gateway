@@ -432,6 +432,24 @@ def create_app(
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get(
+        "/api/v1/health",
+        tags=["system"],
+        summary="Service health check",
+        description="Standard Turkuaz service health endpoint.",
+    )
+    async def service_health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get(
+        "/api/v1/ready",
+        tags=["system"],
+        summary="Service readiness check",
+        description="Standard Turkuaz service readiness endpoint.",
+    )
+    async def service_ready() -> dict[str, str]:
+        return {"status": "ready"}
+
     protected_router = APIRouter(
         prefix="/api/v1",
         dependencies=[Depends(require_integration_key)],

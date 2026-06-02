@@ -8,7 +8,7 @@
 - REST API для динамического QR, статического QR, статусов, списков транзакций, торговых точек и деталей.
 - Webhook endpoint для callback-уведомлений от MKassa.
 - SQL-хранилище callback-событий, аудита и последнего состояния транзакций.
-- PostgreSQL для боевого запуска, SQLite только для локального режима и тестов.
+- SQLite как текущее хранилище для локального, демо и первого production-этапа.
 - Provider/gateway-слой: MKassa подключена как первый платежный провайдер, другие банки добавляются отдельными адаптерами.
 - Retry для временных ошибок `429/5xx`, явные таймауты, без автоматического следования redirect.
 - Валидация сумм и `metadata`: максимум 5 ключей, значение до 150 символов.
@@ -25,27 +25,27 @@ cp .env.example .env
 Заполните `MKASSA_API_KEY` в `.env`, затем:
 
 ```bash
-uvicorn payment_gateway.main:app --host 0.0.0.0 --port 8010 --reload
+uvicorn payment_gateway.main:app --host 0.0.0.0 --port 8502 --reload
 ```
 
 Swagger UI:
 
 ```text
-http://localhost:8010/docs
+http://localhost:8502/docs
 ```
 
 Базовые страницы просмотра операций:
 
 ```text
-http://localhost:8010/ui/transactions
-http://localhost:8010/ui/webhooks
-http://localhost:8010/ui/access-events
+http://localhost:8502/ui/transactions
+http://localhost:8502/ui/webhooks
+http://localhost:8502/ui/access-events
 ```
 
 Отдельный React admin интерфейс:
 
 ```text
-http://localhost:6750
+http://localhost:7502
 ```
 
 React admin сам ходит в backend через `/api`. Отдельный admin-ключ для этих запросов задается на стороне frontend-сервиса в `PAYMENT_ADMIN_API_KEY`; в браузере его вводить не нужно. Внешние интеграционные ключи `INTEGRATION_KEYS` React не использует.
@@ -57,40 +57,38 @@ JSON endpoint'ы `/api/v1/qr/dynamic` и `/api/v1/qr/static` оставлены 
 Проверка:
 
 ```bash
-curl http://localhost:8010/health
+curl http://localhost:8502/api/v1/health
+curl http://localhost:8502/api/v1/ready
 ```
 
-## Docker / production-like запуск
+`/health` оставлен как совместимый alias. Для Turkuaz-сервисов используйте стандартные
+`/api/v1/health` и `/api/v1/ready`.
+
+## Docker / SQLite запуск
 
 ```bash
 cp .env.example .env
 docker compose up --build
 ```
 
-Compose поднимает приложение и PostgreSQL. Сервис будет доступен на `http://localhost:8010`.
-React admin будет доступен на `http://localhost:6750`.
+Compose поднимает приложение с SQLite-файлом в Docker volume. Сервис будет доступен на `http://localhost:8502`.
+React admin будет доступен на `http://localhost:7502`.
 Для admin-интерфейса можно передать ключ так:
 
 ```bash
 PAYMENT_ADMIN_API_KEY=secret-for-admin docker compose up --build
 ```
 
-Для локального запуска без Docker можно оставить SQLite:
+Для локального запуска без Docker используйте SQLite:
 
 ```env
 DATABASE_URL=sqlite:///./data/payment_gateway.db
 ```
 
-Для боевого запуска используйте PostgreSQL:
-
-```env
-DATABASE_URL=postgresql+psycopg://payments:<password>@<host>:5432/payment_gateway
-```
-
-В строгом production-режиме можно запускать миграции явно:
+В строгом режиме можно запускать миграции явно:
 
 ```bash
-AUTO_CREATE_SCHEMA=false DATABASE_URL=postgresql+psycopg://payments:<password>@<host>:5432/payment_gateway \
+AUTO_CREATE_SCHEMA=false DATABASE_URL=sqlite:///./data/payment_gateway.db \
   .venv/bin/python -m alembic upgrade head
 ```
 
@@ -132,12 +130,16 @@ X-Integration-Key: secret-for-1c
 | `GET` | `/api/v1/local/webhooks` | Посмотреть последние webhook-события |
 | `GET` | `/api/v1/local/access-events` | Посмотреть, какие интеграции обращались к сервису |
 
+`branch` и `cashier` в платежных endpoint'ах являются реквизитами MKassa. Они не
+связаны с филиалами Turkuaz, не используются для доступа пользователей к сервисам и
+не требуют отдельного permission.
+
 ## Примеры
 
 Создание динамического QR:
 
 ```bash
-curl -X POST http://localhost:8010/api/v1/qr/dynamic \
+curl -X POST http://localhost:8502/api/v1/qr/dynamic \
   -H "Content-Type: application/json" \
   -H "X-Integration-Key: secret-for-1c" \
   -d '{

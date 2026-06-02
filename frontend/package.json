@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0 --port 6750",
+    "dev": "vite --host 0.0.0.0 --port 7502",
     "build": "tsc -b && vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 6750"
+    "preview": "vite preview --host 0.0.0.0 --port 7502"
   },
   "dependencies": {
     "@turkuaz/ui": "file:../../turkuaz-ui",
