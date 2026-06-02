@@ -7,6 +7,9 @@ const adminApiKey = process.env.PAYMENT_ADMIN_API_KEY ?? "";
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    preserveSymlinks: true,
+  },
   server: {
     port: 7502,
     host: "0.0.0.0",
