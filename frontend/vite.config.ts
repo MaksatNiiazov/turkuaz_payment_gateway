@@ -29,7 +29,20 @@ export default defineConfig({
         target: apiProxyTarget,
         changeOrigin: true,
       },
+      "/ready": {
+        target: apiProxyTarget,
+        changeOrigin: true,
+        rewrite: () => "/api/v1/ready",
+      },
+      "/ui": {
+        target: apiProxyTarget,
+        changeOrigin: true,
+      },
       "/docs": {
+        target: apiProxyTarget,
+        changeOrigin: true,
+      },
+      "/redoc": {
         target: apiProxyTarget,
         changeOrigin: true,
       },

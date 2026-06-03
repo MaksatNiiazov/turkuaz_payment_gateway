@@ -638,6 +638,33 @@ def create_app(
     ) -> StreamingResponse:
         return render_qr_png(data)
 
+    @protected_router.get(
+        "/qr/render/transaction/{transaction_id}",
+        tags=["qr"],
+        summary="Render QR PNG by transaction ID",
+        description=(
+            "Renders a PNG QR image from a locally saved dynamic `payment_token` "
+            "or static `static_qr_link`. Useful for 1C print forms because the "
+            "client only needs to keep the transaction ID."
+        ),
+        response_class=StreamingResponse,
+    )
+    async def render_qr_by_transaction(
+        request: Request,
+        transaction_id: str,
+    ) -> StreamingResponse:
+        item = storage(request).get_transaction(transaction_id)
+        if item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+
+        qr_payload = item.get("payment_token") or item.get("static_qr_link")
+        if not qr_payload:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Transaction does not have a saved QR payload",
+            )
+        return render_qr_png(qr_payload)
+
     @protected_router.post(
         "/qr/static/form",
         response_model=StaticQRResponse,

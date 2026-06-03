@@ -377,6 +377,74 @@ def test_admin_qr_demo_creates_dynamic_qr_and_renders_png(tmp_path: Path) -> Non
     assert render.content.startswith(b"\x89PNG")
 
 
+def test_integration_can_render_saved_qr_by_transaction_id(tmp_path: Path) -> None:
+    app = create_app(
+        settings=make_settings(tmp_path / "app.db"),
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        create = client.post(
+            "/api/v1/qr/dynamic",
+            headers={"X-Integration-Key": "pos-secret"},
+            json={"amount": 100, "metadata": {"invoice_number": "TIGER-1"}},
+        )
+        unauthorized = client.get("/api/v1/qr/render/transaction/MKSA-1")
+        render = client.get(
+            "/api/v1/qr/render/transaction/MKSA-1",
+            headers={"X-Integration-Key": "pos-secret"},
+        )
+
+    assert create.status_code == 200
+    assert unauthorized.status_code == 401
+    assert render.status_code == 200
+    assert render.headers["content-type"] == "image/png"
+    assert render.content.startswith(b"\x89PNG")
+
+
+def test_render_saved_qr_by_transaction_id_reports_missing_transaction(tmp_path: Path) -> None:
+    app = create_app(
+        settings=make_settings(tmp_path / "app.db"),
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        render = client.get(
+            "/api/v1/qr/render/transaction/MKSA-MISSING",
+            headers={"X-Integration-Key": "pos-secret"},
+        )
+
+    assert render.status_code == 404
+    assert render.json()["detail"] == "Transaction not found"
+
+
+def test_render_saved_qr_by_transaction_id_requires_saved_qr_payload(tmp_path: Path) -> None:
+    store = SQLitePaymentStore(tmp_path / "app.db")
+    store.initialize()
+    store.upsert_transaction(
+        transaction_id="MKSA-NO-QR",
+        status="inited",
+        transaction_type="qr",
+        amount=100,
+    )
+    app = create_app(
+        settings=make_settings(tmp_path / "app.db"),
+        client=FakeMKassaClient(),
+        store=store,
+    )
+
+    with TestClient(app) as client:
+        render = client.get(
+            "/api/v1/qr/render/transaction/MKSA-NO-QR",
+            headers={"X-Integration-Key": "pos-secret"},
+        )
+
+    assert render.status_code == 409
+    assert render.json()["detail"] == "Transaction does not have a saved QR payload"
+
+
 def test_admin_cannot_cancel_paid_transaction(tmp_path: Path) -> None:
     store = SQLitePaymentStore(tmp_path / "app.db")
     store.initialize()

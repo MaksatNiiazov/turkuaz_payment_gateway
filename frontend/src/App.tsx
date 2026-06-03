@@ -203,7 +203,6 @@ function App() {
       key: "transactions",
       label: "Транзакции",
       icon: "banknote" as const,
-      permissions: ["payments.transactions.read"],
       active: view === "transactions",
       onClick: () => setView("transactions"),
     },
@@ -211,7 +210,6 @@ function App() {
       key: "webhooks",
       label: "Webhooks",
       icon: "webhook" as const,
-      permissions: ["payments.transactions.read"],
       active: view === "webhooks",
       onClick: () => setView("webhooks"),
     },
@@ -219,7 +217,6 @@ function App() {
       key: "access",
       label: "Доступы",
       icon: "database" as const,
-      permissions: ["payments.transactions.read"],
       active: view === "access",
       onClick: () => setView("access"),
     },
@@ -227,7 +224,6 @@ function App() {
       key: "qr-demo",
       label: "QR Demo",
       icon: "qr" as const,
-      permissions: ["payments.qr.create"],
       active: view === "qr-demo",
       onClick: () => setView("qr-demo"),
     },
@@ -256,7 +252,7 @@ function App() {
       navItems={navItems}
       sideLinks={[
         ...serviceLinksFromRegistry(registeredServices, { currentServiceCode: "payments" }),
-        { href: API_DOCS_URL, label: "Swagger", icon: "file", permissions: ["payments.transactions.read", "payments.qr.create"] },
+        { href: API_DOCS_URL, label: "Swagger", icon: "file" },
       ]}
       serviceName="Payments"
       pageTitle={pageTitle}
