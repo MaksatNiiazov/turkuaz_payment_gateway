@@ -13,6 +13,7 @@ import {
 import type { AccessEvent, DynamicQrResponse, TransactionRow, ViewMode, WebhookEvent } from "./types";
 
 const IDENTITY_API_BASE_URL = import.meta.env.VITE_IDENTITY_API_BASE_URL || "/identity-api";
+const API_DOCS_URL = backendUrl(8502, "/docs");
 
 type LoadState = {
   loading: boolean;
@@ -255,7 +256,7 @@ function App() {
       navItems={navItems}
       sideLinks={[
         ...serviceLinksFromRegistry(registeredServices, { currentServiceCode: "payments" }),
-        { href: "/docs", label: "Swagger", icon: "file", permissions: ["payments.transactions.read", "payments.qr.create"] },
+        { href: API_DOCS_URL, label: "Swagger", icon: "file", permissions: ["payments.transactions.read", "payments.qr.create"] },
       ]}
       serviceName="Payments"
       pageTitle={pageTitle}
@@ -267,7 +268,7 @@ function App() {
       environment="local"
       version="v0.1.0"
       apiStatus={state.error || qrState.error ? "degraded" : "online"}
-      footerLinks={[{ href: "/docs", label: "Swagger" }]}
+      footerLinks={[{ href: API_DOCS_URL, label: "Swagger" }]}
     >
         {view === "qr-demo" ? (
           <QrDemoPanel
@@ -703,3 +704,8 @@ function EmptyState() {
 }
 
 export default App;
+
+function backendUrl(port: number, path = ""): string {
+  if (typeof window === "undefined") return `http://localhost:${port}${path}`;
+  return `${window.location.protocol}//${window.location.hostname}:${port}${path}`;
+}
