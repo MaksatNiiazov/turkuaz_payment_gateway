@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AppShell,
-  fetchCurrentIdentityUser,
   fetchServiceRegistry,
   Icon,
   readAccessClaims,
   serviceLinksFromRegistry,
 } from "@turkuaz/ui";
-import type { CurrentIdentityUser, ServiceRegistryItem, UserConfig } from "@turkuaz/ui";
+import type { ServiceRegistryItem, UserConfig } from "@turkuaz/ui";
 import {
   cancelTransaction,
   createDemoDynamicQr,
@@ -26,6 +25,19 @@ const TOKEN_STORAGE_KEYS = ["identity_access_token", "access_token"];
 type LoadState = {
   loading: boolean;
   error: string | null;
+};
+
+type CurrentIdentityUser = {
+  email: string;
+  full_name: string;
+  branch_name: string | null;
+  roles: string[];
+  permissions?: string[];
+  branch_permissions?: Record<string, string[]>;
+  branch_permissions_by_id?: Record<string, string[]>;
+  active_branch_id?: number | null;
+  branch_id?: number | null;
+  branch_code?: string | null;
 };
 
 function statusTone(status?: string | null): string {
@@ -748,6 +760,31 @@ function backendUrl(port: number, path = ""): string {
 function getStoredIdentityToken(): string | null {
   if (typeof window === "undefined") return null;
   for (const key of TOKEN_STORAGE_KEYS) {
+    const token = window.localStorage.getItem(key);
+    if (token) return token;
+  }
+  return null;
+}
+
+async function fetchCurrentIdentityUser(options: {
+  identityApiBaseUrl: string;
+  tokenStorageKeys: string[];
+}): Promise<CurrentIdentityUser> {
+  const token = readStoredToken(options.tokenStorageKeys);
+  const headers = new Headers({ Accept: "application/json" });
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const response = await fetch(`${options.identityApiBaseUrl}/auth/me`, { headers });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(data?.detail || data?.message || `HTTP ${response.status}`);
+  }
+  return data as CurrentIdentityUser;
+}
+
+function readStoredToken(keys: string[]): string | null {
+  if (typeof window === "undefined") return null;
+  for (const key of keys) {
     const token = window.localStorage.getItem(key);
     if (token) return token;
   }
