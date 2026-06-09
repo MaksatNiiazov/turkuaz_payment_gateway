@@ -457,6 +457,7 @@ def create_app(
     admin_router = APIRouter(
         prefix="/api/v1",
         dependencies=[Depends(require_admin_key)],
+        include_in_schema=False,
     )
 
     @protected_router.post(
@@ -1050,8 +1051,10 @@ async def require_integration_key(
 ) -> None:
     key_pool = settings_from_request(request).integration_key_pool
     if not key_pool:
-        request.state.integration_name = "anonymous"
-        return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Integration keys are not configured",
+        )
     if x_integration_key:
         for integration_name, expected in key_pool.items():
             if hmac.compare_digest(x_integration_key, expected):

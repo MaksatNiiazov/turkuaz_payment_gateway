@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AppShell, fetchServiceRegistry, Icon, serviceLinksFromRegistry } from "@turkuaz/ui";
-import type { ServiceRegistryItem } from "@turkuaz/ui";
+import {
+  AppShell,
+  fetchCurrentIdentityUser,
+  fetchServiceRegistry,
+  Icon,
+  readAccessClaims,
+  serviceLinksFromRegistry,
+} from "@turkuaz/ui";
+import type { CurrentIdentityUser, ServiceRegistryItem, UserConfig } from "@turkuaz/ui";
 import {
   cancelTransaction,
   createDemoDynamicQr,
@@ -14,6 +21,7 @@ import type { AccessEvent, DynamicQrResponse, TransactionRow, ViewMode, WebhookE
 
 const IDENTITY_API_BASE_URL = import.meta.env.VITE_IDENTITY_API_BASE_URL || "/identity-api";
 const API_DOCS_URL = backendUrl(8502, "/docs");
+const TOKEN_STORAGE_KEYS = ["identity_access_token", "access_token"];
 
 type LoadState = {
   loading: boolean;
@@ -85,6 +93,7 @@ function App() {
   const [qrResult, setQrResult] = useState<DynamicQrResponse | null>(null);
   const [qrState, setQrState] = useState<LoadState>({ loading: false, error: null });
   const [registeredServices, setRegisteredServices] = useState<ServiceRegistryItem[]>([]);
+  const [currentUser, setCurrentUser] = useState<CurrentIdentityUser | null>(null);
 
   const selectedTransaction = useMemo(
     () => transactions.find((item) => item.id === selectedId) ?? transactions[0] ?? null,
@@ -137,12 +146,35 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
-    void fetchServiceRegistry({ identityApiBaseUrl: IDENTITY_API_BASE_URL })
-      .then((services) => {
-        if (!cancelled) setRegisteredServices(services);
+    if (!getStoredIdentityToken()) {
+      setCurrentUser(null);
+      setRegisteredServices([]);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void Promise.all([
+      fetchCurrentIdentityUser({
+        identityApiBaseUrl: IDENTITY_API_BASE_URL,
+        tokenStorageKeys: TOKEN_STORAGE_KEYS,
+      }).catch(() => null),
+      fetchServiceRegistry({
+        identityApiBaseUrl: IDENTITY_API_BASE_URL,
+        tokenStorageKeys: TOKEN_STORAGE_KEYS,
+      }).catch(() => [] as ServiceRegistryItem[]),
+    ])
+      .then(([me, services]) => {
+        if (!cancelled) {
+          setCurrentUser(me);
+          setRegisteredServices(services);
+        }
       })
       .catch(() => {
-        if (!cancelled) setRegisteredServices([]);
+        if (!cancelled) {
+          setCurrentUser(null);
+          setRegisteredServices([]);
+        }
       });
     return () => {
       cancelled = true;
@@ -240,6 +272,10 @@ function App() {
     view === "qr-demo"
       ? "Создание тестового динамического QR через backend API."
       : "Операционная панель для просмотра платежей, callback'ов и обращений интеграций.";
+  const shellClaims = currentUser ?? readAccessClaims(TOKEN_STORAGE_KEYS);
+  const shellUser = currentUser
+    ? userMenuFromIdentityUser(currentUser, handleLogout)
+    : userMenuFromClaims(readAccessClaims(TOKEN_STORAGE_KEYS) as Record<string, unknown>, handleLogout);
 
   return (
     <AppShell
@@ -254,6 +290,8 @@ function App() {
         ...serviceLinksFromRegistry(registeredServices, { currentServiceCode: "payments" }),
         { href: API_DOCS_URL, label: "Swagger", icon: "file" },
       ]}
+      accessClaims={shellClaims}
+      tokenStorageKeys={TOKEN_STORAGE_KEYS}
       serviceName="Payments"
       pageTitle={pageTitle}
       pageDescription={pageDescription}
@@ -265,6 +303,7 @@ function App() {
       version="v0.1.0"
       apiStatus={state.error || qrState.error ? "degraded" : "online"}
       footerLinks={[{ href: API_DOCS_URL, label: "Swagger" }]}
+      user={shellUser}
     >
         {view === "qr-demo" ? (
           <QrDemoPanel
@@ -704,4 +743,62 @@ export default App;
 function backendUrl(port: number, path = ""): string {
   if (typeof window === "undefined") return `http://localhost:${port}${path}`;
   return `${window.location.protocol}//${window.location.hostname}:${port}${path}`;
+}
+
+function getStoredIdentityToken(): string | null {
+  if (typeof window === "undefined") return null;
+  for (const key of TOKEN_STORAGE_KEYS) {
+    const token = window.localStorage.getItem(key);
+    if (token) return token;
+  }
+  return null;
+}
+
+function handleLogout(): void {
+  for (const key of TOKEN_STORAGE_KEYS) {
+    window.localStorage.removeItem(key);
+  }
+  window.location.href = identityFrontendUrl();
+}
+
+function userMenuFromIdentityUser(user: CurrentIdentityUser, onLogout: () => void): UserConfig {
+  return {
+    name: user.full_name || user.email,
+    email: user.email,
+    role: user.roles[0] || user.branch_name || "Payments",
+    actions: [{ key: "logout", label: "Выйти", icon: "logout", onClick: onLogout }],
+  };
+}
+
+function userMenuFromClaims(claims: Record<string, unknown>, onLogout: () => void): UserConfig | undefined {
+  const email = stringClaim(claims.email);
+  const name = stringClaim(claims.full_name) || email;
+  if (!name) return undefined;
+  return {
+    name,
+    email,
+    role: firstStringClaim(claims.roles) || stringClaim(claims.branch_name) || "Payments",
+    actions: [{ key: "logout", label: "Выйти", icon: "logout", onClick: onLogout }],
+  };
+}
+
+function identityFrontendUrl(): string {
+  if (typeof window === "undefined") return "http://localhost:7500";
+  if (isIisFrontendMode()) return `${window.location.origin}/identity_front/`;
+  return `${window.location.protocol}//${window.location.hostname}:7500`;
+}
+
+function isIisFrontendMode(): boolean {
+  if (typeof window === "undefined") return false;
+  const port = window.location.port;
+  return !port || port === "80" || port === "443" || /^\/payments_front(?:\/|$)/i.test(window.location.pathname);
+}
+
+function firstStringClaim(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.find((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function stringClaim(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

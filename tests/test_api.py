@@ -88,6 +88,25 @@ def test_integration_key_protects_control_endpoints(tmp_path: Path) -> None:
     assert authorized.json()["id"] == "MKSA-1"
 
 
+def test_integration_keys_are_required_to_enable_control_endpoints(tmp_path: Path) -> None:
+    settings = Settings(
+        mkassa_api_key=SecretStr("secret"),
+        payment_admin_api_key=SecretStr("admin-secret"),
+        database_url=f"sqlite:///{tmp_path / 'app.db'}",
+    )
+    app = create_app(
+        settings=settings,
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/integration")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Integration keys are not configured"
+
+
 def test_service_health_endpoints_do_not_require_integration_key(tmp_path: Path) -> None:
     app = create_app(
         settings=make_settings(tmp_path / "app.db"),
@@ -103,6 +122,24 @@ def test_service_health_endpoints_do_not_require_integration_key(tmp_path: Path)
     assert health.json() == {"status": "ok"}
     assert ready.status_code == 200
     assert ready.json() == {"status": "ready"}
+
+
+def test_swagger_exposes_only_public_integration_key_scheme(tmp_path: Path) -> None:
+    app = create_app(
+        settings=make_settings(tmp_path / "app.db"),
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    openapi = app.openapi()
+
+    assert sorted(openapi["components"]["securitySchemes"]) == ["X-Integration-Key"]
+    assert openapi["paths"]["/api/v1/qr/dynamic"]["post"]["security"] == [
+        {"X-Integration-Key": []}
+    ]
+    assert openapi["paths"]["/health"]["get"].get("security") is None
+    assert openapi["paths"]["/api/v1/webhooks/mkassa"]["post"].get("security") is None
+    assert "/api/v1/local/transactions" not in openapi["paths"]
 
 
 def test_backend_demo_page_is_not_registered(tmp_path: Path) -> None:
