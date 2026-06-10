@@ -160,13 +160,23 @@ class AsyncODengiClient:
         )
 
     async def get_transaction(self, transaction_id: str) -> Transaction:
-        response_data = await self._command(
-            "statusPayment",
-            {
-                "order_id": transaction_id,
-                "mark": 1,
-            },
-        )
+        try:
+            response_data = await self._command(
+                "statusPayment",
+                {
+                    "order_id": transaction_id,
+                    "mark": 1,
+                },
+            )
+        except ODengiAPIError as exc:
+            if self._is_no_payment_transactions_error(exc):
+                return Transaction(
+                    id=transaction_id,
+                    status="waiting",
+                    transaction_type="qr",
+                    metadata={"order_id": transaction_id},
+                )
+            raise
         payment = self._latest_payment(response_data)
         status_value = payment.get("status") if payment else response_data.get("status")
         amount = payment.get("amount") if payment else response_data.get("amount")
@@ -429,6 +439,19 @@ class AsyncODengiClient:
             return max(float(value), 0.0)
         except ValueError:
             return None
+
+    @staticmethod
+    def _is_no_payment_transactions_error(exc: ODengiAPIError) -> bool:
+        if not exc.response_text:
+            return False
+        try:
+            parsed = json.loads(exc.response_text)
+        except ValueError:
+            return False
+        data = parsed.get("data")
+        if not isinstance(data, dict):
+            return False
+        return str(data.get("error")) == "63"
 
 
 @dataclass(frozen=True)

@@ -59,14 +59,14 @@ export function fetchAccessEvents(limit: number): Promise<AccessEvent[]> {
 export function cancelTransaction(transactionId: string): Promise<{ transaction_id: string; message: string }> {
   return requestJson<{ transaction_id: string; message: string }>(
     `/api/v1/local/transactions/${encodeURIComponent(transactionId)}/cancel`,
-    { method: "PUT" },
+    { method: "PUT", body: "" },
   );
 }
 
 export function refreshTransaction(transactionId: string): Promise<TransactionRow> {
   return requestJson<TransactionRow>(
     `/api/v1/local/transactions/${encodeURIComponent(transactionId)}/refresh`,
-    { method: "PUT" },
+    { method: "PUT", body: "" },
   );
 }
 

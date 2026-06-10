@@ -21,6 +21,9 @@ from payment_gateway.store import SQLitePaymentStore
 class FakeProvider:
     name = "fake"
 
+    def __init__(self) -> None:
+        self.canceled_transaction_id: str | None = None
+
     async def create_dynamic_qr(self, payload: DynamicQRCreate) -> DynamicQRResponse:
         return DynamicQRResponse(
             id="FAKE-1",
@@ -46,6 +49,7 @@ class FakeProvider:
         return Transaction(id=transaction_id, status="paid")
 
     async def cancel_transaction(self, transaction_id: str) -> CancelResponse:
+        self.canceled_transaction_id = transaction_id
         return CancelResponse(transaction_id=transaction_id, message="OK")
 
     async def list_transactions(self, **_: object) -> TransactionListResponse:
@@ -77,3 +81,31 @@ async def test_payment_service_persists_provider_transaction(tmp_path) -> None:
     assert saved["provider"] == "fake"
     assert saved["status"] == "inited"
     assert saved["metadata"] == {"invoice_number": "TIGER-1"}
+
+
+@pytest.mark.asyncio
+async def test_payment_service_cancels_by_saved_provider_transaction_id(tmp_path) -> None:
+    store = SQLitePaymentStore(tmp_path / "app.db")
+    store.initialize()
+    provider = FakeProvider()
+    service = PaymentService(
+        gateway=PaymentGateway([provider], default_provider="fake"),
+        store=store,
+    )
+    store.upsert_transaction(
+        transaction_id="TIGER-1",
+        status="waiting",
+        transaction_type="qr",
+        raw_payload={
+            "id": "TIGER-1",
+            "provider_transaction_id": "553459220202",
+            "invoice_id": "553459220202",
+        },
+        provider="fake",
+    )
+
+    response = await service.cancel_transaction("TIGER-1")
+
+    assert response.transaction_id == "TIGER-1"
+    assert provider.canceled_transaction_id == "553459220202"
+    assert store.get_transaction("TIGER-1")["status"] == "canceled"

@@ -135,6 +135,37 @@ async def test_get_transaction_maps_odengi_status_payment() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_transaction_maps_missing_odengi_payment_to_waiting() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "cmd": "statusPayment",
+                "data": {
+                    "error": 63,
+                    "desc": "Транзакций по mark 1 не найдено",
+                },
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async with AsyncODengiClient(
+        sid="8087710950",
+        password="merchant-password",
+        retry_base_seconds=0,
+        max_retries=0,
+        http_client=http_client,
+    ) as client:
+        response = await client.get_transaction("TIGER-1")
+
+    await http_client.aclose()
+    assert response.id == "TIGER-1"
+    assert response.status == "waiting"
+    assert response.transaction_type == "qr"
+    assert response.metadata == {"order_id": "TIGER-1"}
+
+
+@pytest.mark.asyncio
 async def test_odengi_api_error_is_raised_from_error_payload() -> None:
     async def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
