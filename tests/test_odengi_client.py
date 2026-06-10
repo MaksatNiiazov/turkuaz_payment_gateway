@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -34,7 +35,16 @@ async def test_create_dynamic_qr_sends_signed_odengi_request() -> None:
         assert body["version"] == 1005
         assert body["sid"] == "8087710950"
         assert body["lang"] == "ru"
-        assert body["data"] == {
+        data = dict(body["data"])
+        date_life = data.pop("date_life")
+        parsed_date_life = datetime.strptime(date_life, "%Y-%m-%d %H:%M:%S")
+        expected_date_life = datetime.now(timezone(timedelta(hours=6))).replace(
+            tzinfo=None
+        ) + timedelta(hours=24)
+        assert expected_date_life - timedelta(minutes=1) <= parsed_date_life <= (
+            expected_date_life + timedelta(minutes=1)
+        )
+        assert data == {
             "order_id": "TIGER-FACTURE-1001",
             "desc": "TIGER-FACTURE-1001",
             "amount": 100,
@@ -80,6 +90,7 @@ async def test_create_dynamic_qr_sends_signed_odengi_request() -> None:
                     "invoice_number": "TIGER-FACTURE-1001",
                     "source": "tiger",
                 },
+                is_long_living=True,
             )
         )
 

@@ -633,6 +633,10 @@ function QrDemoPanel({
   const [longLiving, setLongLiving] = useState(false);
   const usesMkassaBranchFields = provider === "mkassa";
 
+  useEffect(() => {
+    if (provider === "odengi" && longLiving) setLongLiving(false);
+  }, [longLiving, provider]);
+
   const metadataCount = [
     invoiceNumber.trim(),
     source.trim(),
@@ -746,14 +750,18 @@ function QrDemoPanel({
         <p className={metadataCount > 5 ? "error-copy" : "hint-copy"}>
           Metadata: {metadataCount}/5
         </p>
-        <label className="check-row">
-          <input
-            checked={longLiving}
-            type="checkbox"
-            onChange={(event) => setLongLiving(event.target.checked)}
-          />
-          {provider === "odengi" ? "Reusable/static QR (long_term)" : "Long living QR"}
-        </label>
+        {provider === "mkassa" ? (
+          <label className="check-row">
+            <input
+              checked={longLiving}
+              type="checkbox"
+              onChange={(event) => setLongLiving(event.target.checked)}
+            />
+            Long living QR
+          </label>
+        ) : (
+          <p className="hint-copy">О!Деньги создается как одноразовый QR на 24 часа.</p>
+        )}
         <button className="refresh" disabled={state.loading} type="submit">
           <Icon name="qr" size={16} />
           {state.loading ? "Создание..." : "Создать QR"}

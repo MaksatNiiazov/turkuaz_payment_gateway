@@ -8,7 +8,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -57,6 +57,7 @@ class AsyncODengiClient:
         test: int = 1,
         currency: str = "KGS",
         result_url: str | None = None,
+        dynamic_qr_lifetime_hours: int = 24,
         timeout: httpx.Timeout | None = None,
         max_retries: int = 2,
         retry_base_seconds: float = 0.3,
@@ -70,6 +71,7 @@ class AsyncODengiClient:
         self.test = test
         self.currency = currency
         self.result_url = result_url
+        self.dynamic_qr_lifetime_hours = dynamic_qr_lifetime_hours
         self.max_retries = max_retries
         self.retry_base_seconds = retry_base_seconds
         self._owns_client = http_client is None
@@ -97,6 +99,7 @@ class AsyncODengiClient:
             test=settings.odengi_test,
             currency=settings.odengi_currency,
             result_url=settings.odengi_result_url,
+            dynamic_qr_lifetime_hours=settings.odengi_dynamic_qr_lifetime_hours,
             timeout=timeout,
             max_retries=settings.request_max_retries,
             retry_base_seconds=settings.request_retry_base_seconds,
@@ -115,12 +118,13 @@ class AsyncODengiClient:
     async def create_dynamic_qr(self, payload: DynamicQRCreate) -> DynamicQRResponse:
         metadata = self._metadata(payload.metadata)
         order_id = self._order_id(metadata)
-        long_term = 1 if payload.is_long_living else 0
+        long_term = 0
         data = self._invoice_data(
             order_id=order_id,
             amount=payload.amount,
             metadata=metadata,
             long_term=long_term,
+            date_life=self._dynamic_date_life(),
         )
         response_data = await self._command("createInvoice", data)
         return self._dynamic_response(
@@ -139,6 +143,7 @@ class AsyncODengiClient:
             amount=payload.amount,
             metadata=metadata,
             long_term=1,
+            date_life=None,
         )
         response_data = await self._command("createInvoice", data)
         qr_link = self._qr_payload(response_data)
@@ -329,6 +334,7 @@ class AsyncODengiClient:
         amount: int | None,
         metadata: dict[str, str],
         long_term: int,
+        date_life: str | None,
     ) -> dict[str, Any]:
         return self._without_none(
             {
@@ -338,10 +344,17 @@ class AsyncODengiClient:
                 "currency": self.currency,
                 "test": self.test,
                 "long_term": long_term,
+                "date_life": date_life,
                 "result_url": self.result_url,
                 "fields_other": metadata or None,
             }
         )
+
+    def _dynamic_date_life(self) -> str:
+        local_time = datetime.now(timezone(timedelta(hours=6))) + timedelta(
+            hours=self.dynamic_qr_lifetime_hours
+        )
+        return local_time.strftime("%Y-%m-%d %H:%M:%S")
 
     def _dynamic_response(
         self,

@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     odengi_test: int = Field(1, alias="ODENGI_TEST", ge=0, le=1)
     odengi_currency: str = Field("KGS", alias="ODENGI_CURRENCY")
     odengi_result_url: str | None = Field(None, alias="ODENGI_RESULT_URL")
+    odengi_dynamic_qr_lifetime_hours: int = Field(
+        24,
+        alias="ODENGI_DYNAMIC_QR_LIFETIME_HOURS",
+        ge=1,
+    )
     integration_keys: SecretStr | None = Field(None, alias="INTEGRATION_KEYS")
     payment_admin_api_key: SecretStr | None = Field(None, alias="PAYMENT_ADMIN_API_KEY")
     identity_api_url: str | None = Field(

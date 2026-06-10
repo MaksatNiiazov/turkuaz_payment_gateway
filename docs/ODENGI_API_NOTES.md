@@ -53,7 +53,9 @@ The gateway keeps public client payloads stable:
 - Public `id` for O!Dengi responses is our `order_id`.
 - Provider `invoice_id` is stored in response extras and local `raw_payload`.
 - `metadata.invoice_number` becomes `order_id` when present.
-- `is_long_living=true` maps to O!Dengi `long_term=1`.
+- Dynamic QR is sent as one-time QR: `long_term=0`.
+- Dynamic QR receives `date_life` in local UTC+6 time; default lifetime is 24 hours.
+- Static QR uses `long_term=1`.
 - O!Dengi ready links are returned as extras: `qr`, `qr_url`, `link_app`, `site_pay`.
 
 Callback/result URL:
