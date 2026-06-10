@@ -155,6 +155,7 @@ def test_integration_key_protects_control_endpoints(tmp_path: Path) -> None:
 def test_integration_keys_are_required_to_enable_control_endpoints(tmp_path: Path) -> None:
     settings = Settings(
         mkassa_api_key=SecretStr("secret"),
+        integration_keys=None,
         payment_admin_api_key=SecretStr("admin-secret"),
         database_url=f"sqlite:///{tmp_path / 'app.db'}",
     )

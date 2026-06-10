@@ -52,6 +52,11 @@ React admin сам ходит в backend через `/api`. Отдельный a
 Если в браузере есть общий `identity_access_token`, верхнее меню React admin берет текущего пользователя из Turkuaz Identity через `/identity-api/auth/me`.
 Для IIS/static frontend deployments проксируйте `/identity-api/*` в `http://127.0.0.1:8500/api/v1/*`, так же как в `frontend/public/web.config`.
 
+При запуске без Docker держите `PAYMENT_ADMIN_API_KEY` в корневом `.env` проекта и
+перезапускайте оба процесса после изменения. Backend читает этот `.env` напрямую,
+а Vite frontend-proxy тоже подхватывает его из корня проекта и отправляет в backend
+как `X-Admin-Key`.
+
 В Swagger нажмите `Authorize`, вставьте выданный ключ в `X-Integration-Key`.
 Для ручного тестирования используйте раздел `QR Demo` в React admin или `/api/v1/qr/dynamic/form` и `/api/v1/qr/static/form` в Swagger.
 JSON endpoint'ы `/api/v1/qr/dynamic` и `/api/v1/qr/static` оставлены для 1С, сайта, POS и других системных интеграций.
