@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AppShell,
   fetchServiceRegistry,
@@ -9,10 +9,13 @@ import {
 import type { ServiceRegistryItem, UserConfig } from "@turkuaz/ui";
 import {
   cancelTransaction,
+  clearToken,
   createDemoDynamicQr,
   fetchAccessEvents,
   fetchTransactions,
   fetchWebhooks,
+  getToken,
+  loginViaIdentity,
   qrImageUrl,
   refreshTransaction,
 } from "./api";
@@ -98,6 +101,8 @@ function canCancelTransaction(transaction: TransactionRow | null): boolean {
 }
 
 function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(getToken()));
+  const isLoginPath = typeof window !== "undefined" && window.location.pathname === "/login";
   const [view, setView] = useState<ViewMode>("transactions");
   const [limit, setLimit] = useState(50);
   const [statusFilter, setStatusFilter] = useState("");
@@ -160,12 +165,13 @@ function App() {
   }, [limit, providerFilter, statusFilter]);
 
   useEffect(() => {
+    if (!isAuthenticated || isLoginPath) return;
     if (view !== "qr-demo") void loadData();
-  }, [loadData, view]);
+  }, [isAuthenticated, isLoginPath, loadData, view]);
 
   useEffect(() => {
     let cancelled = false;
-    if (!getStoredIdentityToken()) {
+    if (!isAuthenticated || isLoginPath || !getStoredIdentityToken()) {
       setCurrentUser(null);
       setRegisteredServices([]);
       return () => {
@@ -198,7 +204,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isAuthenticated, isLoginPath]);
 
   async function handleCancel(transaction: TransactionRow) {
     if (!canCancelTransaction(transaction) || cancelingId) return;
@@ -301,6 +307,17 @@ function App() {
   const shellUser = currentUser
     ? userMenuFromIdentityUser(currentUser, handleLogout)
     : userMenuFromClaims(readAccessClaims(TOKEN_STORAGE_KEYS) as Record<string, unknown>, handleLogout);
+
+  if (!isAuthenticated || isLoginPath) {
+    return (
+      <LoginPage
+        onLoggedIn={() => {
+          window.history.replaceState(null, "", "/");
+          setIsAuthenticated(true);
+        }}
+      />
+    );
+  }
 
   return (
     <AppShell
@@ -822,18 +839,67 @@ function EmptyState() {
 
 export default App;
 
+function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setSubmitting(true);
+    try {
+      await loginViaIdentity(email, password);
+      onLoggedIn();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Не удалось войти. Проверьте логин и пароль.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="login-page">
+      <form className="form-panel login-panel" onSubmit={submit}>
+        <div>
+          <h1>Вход в Turkuaz Payments</h1>
+          <p className="hint-copy">Вход через единый модуль пользователей.</p>
+        </div>
+        <label>
+          Email Identity
+          <input
+            autoComplete="username"
+            autoFocus
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+          />
+        </label>
+        <label>
+          Пароль
+          <input
+            autoComplete="current-password"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+        </label>
+        {error && <p className="error-copy">{error}</p>}
+        <button className="refresh" disabled={submitting} type="submit">
+          {submitting ? "Вход..." : "Войти"}
+        </button>
+      </form>
+    </main>
+  );
+}
+
 function backendUrl(port: number, path = ""): string {
   if (typeof window === "undefined") return `http://localhost:${port}${path}`;
   return `${window.location.protocol}//${window.location.hostname}:${port}${path}`;
 }
 
 function getStoredIdentityToken(): string | null {
-  if (typeof window === "undefined") return null;
-  for (const key of TOKEN_STORAGE_KEYS) {
-    const token = window.localStorage.getItem(key);
-    if (token) return token;
-  }
-  return null;
+  return getToken();
 }
 
 async function fetchCurrentIdentityUser(options: {
@@ -862,10 +928,8 @@ function readStoredToken(keys: string[]): string | null {
 }
 
 function handleLogout(): void {
-  for (const key of TOKEN_STORAGE_KEYS) {
-    window.localStorage.removeItem(key);
-  }
-  window.location.href = identityFrontendUrl();
+  clearToken();
+  window.location.href = "/login";
 }
 
 function userMenuFromIdentityUser(user: CurrentIdentityUser, onLogout: () => void): UserConfig {
@@ -887,18 +951,6 @@ function userMenuFromClaims(claims: Record<string, unknown>, onLogout: () => voi
     role: firstStringClaim(claims.roles) || stringClaim(claims.branch_name) || "Payments",
     actions: [{ key: "logout", label: "Выйти", icon: "logout", onClick: onLogout }],
   };
-}
-
-function identityFrontendUrl(): string {
-  if (typeof window === "undefined") return "http://localhost:7500";
-  if (isIisFrontendMode()) return `${window.location.origin}/identity_front/`;
-  return `${window.location.protocol}//${window.location.hostname}:7500`;
-}
-
-function isIisFrontendMode(): boolean {
-  if (typeof window === "undefined") return false;
-  const port = window.location.port;
-  return !port || port === "80" || port === "443" || /^\/payments_front(?:\/|$)/i.test(window.location.pathname);
 }
 
 function firstStringClaim(value: unknown): string | undefined {

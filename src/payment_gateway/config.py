@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     odengi_result_url: str | None = Field(None, alias="ODENGI_RESULT_URL")
     integration_keys: SecretStr | None = Field(None, alias="INTEGRATION_KEYS")
     payment_admin_api_key: SecretStr | None = Field(None, alias="PAYMENT_ADMIN_API_KEY")
+    identity_api_url: str | None = Field(
+        "http://127.0.0.1:8500/api/v1",
+        alias="IDENTITY_API_URL",
+    )
     database_url: str = Field("sqlite:///./data/payment_gateway.db", alias="DATABASE_URL")
     auto_create_schema: bool = Field(True, alias="AUTO_CREATE_SCHEMA")
     request_timeout_connect: float = Field(5.0, alias="REQUEST_TIMEOUT_CONNECT", gt=0)
@@ -71,7 +75,7 @@ class Settings(BaseSettings):
             raise ValueError("MKASSA_API_KEY must not be empty")
         return value
 
-    @field_validator("odengi_base_url", "odengi_result_url")
+    @field_validator("odengi_base_url", "odengi_result_url", "identity_api_url")
     @classmethod
     def normalize_optional_url(cls, value: str | None) -> str | None:
         if value is None:

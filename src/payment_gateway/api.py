@@ -6,10 +6,11 @@ from contextlib import asynccontextmanager
 from datetime import date
 from typing import Annotated
 
+import httpx
 import qrcode
 from fastapi import APIRouter, Body, Depends, FastAPI, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from fastapi.security import APIKeyHeader
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from payment_gateway.config import PROVIDER_MKASSA, PROVIDER_ODENGI, Settings, get_settings
 from payment_gateway.gateway import PaymentGateway, PaymentProvider
@@ -59,6 +60,7 @@ admin_key_scheme = APIKeyHeader(
     auto_error=False,
     description="Private key used only by the admin web service.",
 )
+admin_bearer_scheme = HTTPBearer(auto_error=False)
 
 OPENAPI_TAGS = [
     {
@@ -118,7 +120,7 @@ ADMIN_HTML = """
     <label>X-Admin-Key<br>
       <input id="adminKey" type="password" size="60" autocomplete="off">
     </label>
-    <button type="button" onclick="saveKey()">Сохранить</button>
+    <button type="button" onclick="applyKey()">Применить</button>
     <button type="button" onclick="clearKey()">Очистить</button>
     <span id="keyState" class="muted"></span>
   </section>
@@ -134,17 +136,14 @@ ADMIN_HTML = """
     const controls = document.getElementById("controls");
     const content = document.getElementById("content");
 
-    keyInput.value = localStorage.getItem("adminKey") || "";
     updateKeyState();
 
-    function saveKey() {
-      localStorage.setItem("adminKey", keyInput.value);
+    function applyKey() {
       updateKeyState();
       loadPage();
     }
 
     function clearKey() {
-      localStorage.removeItem("adminKey");
       keyInput.value = "";
       updateKeyState();
     }
@@ -154,7 +153,11 @@ ADMIN_HTML = """
     }
 
     function headers() {
-      return { "X-Admin-Key": keyInput.value };
+      const token = localStorage.getItem("identity_access_token") || localStorage.getItem("access_token");
+      const result = {};
+      if (keyInput.value) result["X-Admin-Key"] = keyInput.value;
+      if (token) result.Authorization = `Bearer ${token}`;
+      return result;
     }
 
     function text(value) {
@@ -1197,16 +1200,54 @@ async def require_integration_key(
 async def require_admin_key(
     request: Request,
     x_admin_key: str | None = Depends(admin_key_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(admin_bearer_scheme),
 ) -> None:
-    configured = settings_from_request(request).payment_admin_api_key
+    settings = settings_from_request(request)
+    configured = settings.payment_admin_api_key
     if configured is None or not configured.get_secret_value().strip():
+        if credentials is not None:
+            await verify_identity_admin_token(settings, credentials.credentials)
+            request.state.integration_name = "admin"
+            return
         request.state.integration_name = "admin"
         return
     expected = configured.get_secret_value().strip()
     if x_admin_key and hmac.compare_digest(x_admin_key, expected):
         request.state.integration_name = "admin"
         return
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin key")
+    if credentials is not None:
+        await verify_identity_admin_token(settings, credentials.credentials)
+        request.state.integration_name = "admin"
+        return
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
+
+
+async def verify_identity_admin_token(settings: Settings, token: str) -> None:
+    if not settings.identity_api_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Identity API is not configured",
+        )
+    auth_me_url = f"{settings.identity_api_url.rstrip('/')}/auth/me"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(
+                auth_me_url,
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Identity service is unavailable",
+        ) from exc
+
+    if response.status_code in {status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN}:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token")
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Identity service rejected admin token validation",
+        )
 
 
 async def mkassa_api_error_handler(_: Request, exc: MKassaAPIError):

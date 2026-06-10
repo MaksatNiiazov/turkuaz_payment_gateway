@@ -49,15 +49,16 @@ http://localhost:7502
 ```
 
 React admin сам ходит в backend через `/api`. Если `PAYMENT_ADMIN_API_KEY` заполнен,
-admin endpoints требуют `X-Admin-Key`; если оставить его пустым, admin endpoints
-работают без отдельного ключа. Внешние интеграционные ключи `INTEGRATION_KEYS`
-React не использует.
-Если в браузере есть общий `identity_access_token`, верхнее меню React admin берет текущего пользователя из Turkuaz Identity через `/identity-api/auth/me`.
-Для IIS/static frontend deployments проксируйте `/identity-api/*` в `http://127.0.0.1:8500/api/v1/*`, так же как в `frontend/public/web.config`.
+admin endpoints принимают `X-Admin-Key`; также admin endpoints принимают
+`Authorization: Bearer <identity_access_token>` и проверяют токен через
+`IDENTITY_API_URL`.
 
-При запуске без Docker проще оставить `PAYMENT_ADMIN_API_KEY=` пустым в корневом
-`.env` проекта. Тогда IIS/Vite не должны добавлять `X-Admin-Key`, а React admin
-не будет упираться в `Invalid admin key`.
+React admin открывается через локальную страницу `/login`, как Converter: форма
+отправляет email/password в Turkuaz Identity через `/identity-api/auth/login`,
+сохраняет `identity_access_token` и дальше отправляет Bearer-токен в admin API.
+Внешние интеграционные ключи `INTEGRATION_KEYS` React не использует.
+Для IIS/static frontend deployments проксируйте `/identity-api/*` в
+`http://127.0.0.1:8500/api/v1/*`, так же как в `frontend/public/web.config`.
 
 В Swagger нажмите `Authorize`, вставьте выданный ключ в `X-Integration-Key`.
 Для ручного тестирования используйте раздел `QR Demo` в React admin или `/api/v1/qr/dynamic/form` и `/api/v1/qr/static/form` в Swagger.
@@ -83,7 +84,8 @@ docker compose up --build
 
 Compose поднимает приложение с SQLite-файлом в Docker volume. Сервис будет доступен на `http://localhost:8502`.
 React admin будет доступен на `http://localhost:7502`.
-Если нужен отдельный admin-ключ, его можно передать так:
+По умолчанию Docker-прокси использует `PAYMENT_ADMIN_API_KEY=admin-dev-key`.
+Если нужен другой admin-ключ, его можно передать так:
 
 ```bash
 PAYMENT_ADMIN_API_KEY=secret-for-admin docker compose up --build
@@ -130,8 +132,9 @@ PAYMENT_PROVIDER_BY_INTEGRATION=1c_obank:odengi,site:mkassa,pos:odengi
 
 Внешние клиенты все равно передают только `X-Integration-Key`, без отдельного `provider`.
 
-Админские endpoints `/api/v1/local/...` могут защищаться отдельно через `PAYMENT_ADMIN_API_KEY`.
-Если ключ пустой, они доступны без `X-Admin-Key`. Этот ключ не нужно передавать интеграторам.
+Админские endpoints `/api/v1/local/...` и `/api/v1/admin/...` принимают либо
+`Authorization: Bearer <identity_access_token>`, либо серверный `X-Admin-Key`
+из `PAYMENT_ADMIN_API_KEY`. Этот ключ не нужно передавать интеграторам.
 
 | Метод | URL | Назначение |
 | --- | --- | --- |

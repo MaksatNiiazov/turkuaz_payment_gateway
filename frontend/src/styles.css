@@ -3,6 +3,32 @@
   gap: 14px;
 }
 
+.login-page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--teal, #0f766e) 14%, transparent), transparent 34rem),
+    var(--background, #f6f8fb);
+  color: var(--text, #0f172a);
+  padding: 24px;
+}
+
+.login-panel {
+  width: min(100%, 420px);
+}
+
+.login-panel h1 {
+  margin: 0 0 6px;
+  color: var(--text, #0f172a);
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.login-panel .refresh {
+  width: 100%;
+}
+
 .qr-image {
   width: 260px;
   max-width: 100%;

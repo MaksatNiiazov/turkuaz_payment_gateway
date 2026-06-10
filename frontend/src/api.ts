@@ -7,6 +7,11 @@ import type {
 } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
+const IDENTITY_API_BASE_URL = import.meta.env.VITE_IDENTITY_API_BASE_URL || "/identity-api";
+const IDENTITY_API_FALLBACK_BASE_URL =
+  import.meta.env.VITE_IDENTITY_API_FALLBACK_BASE_URL || `${localApiUrl(8500)}/api/v1`;
+const TOKEN_KEY = "identity_access_token";
+const FALLBACK_TOKEN_KEY = "access_token";
 
 type ListFilters = {
   limit: number;
@@ -15,15 +20,23 @@ type ListFilters = {
 };
 
 async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const token = getToken();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers: {
       Accept: "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init.headers,
     },
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) {
+    if (response.status === 401) {
+      clearToken();
+      if (window.location.pathname !== "/login") {
+        window.location.href = "/login";
+      }
+    }
     const message = data?.detail || data?.message || `HTTP ${response.status}`;
     throw new Error(message);
   }
@@ -106,4 +119,131 @@ export function createDemoDynamicQr(payload: {
 
 export function qrImageUrl(data: string): string {
   return `${API_BASE_URL}/api/v1/admin/qr/render?data=${encodeURIComponent(data)}`;
+}
+
+export function getToken(): string | null {
+  return window.localStorage.getItem(TOKEN_KEY) || window.localStorage.getItem(FALLBACK_TOKEN_KEY);
+}
+
+export function setToken(token: string): void {
+  window.localStorage.setItem(TOKEN_KEY, token);
+  window.localStorage.setItem(FALLBACK_TOKEN_KEY, token);
+}
+
+export function clearToken(): void {
+  window.localStorage.removeItem(TOKEN_KEY);
+  window.localStorage.removeItem(FALLBACK_TOKEN_KEY);
+}
+
+export async function loginViaIdentity(email: string, password: string): Promise<void> {
+  if (!email.trim().includes("@")) {
+    throw new Error("Введите email пользователя из Identity.");
+  }
+  const data = await requestIdentityJson<{ access_token: string }>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+  setToken(data.access_token);
+}
+
+async function requestIdentityJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const bases = uniqueBaseUrls([IDENTITY_API_BASE_URL, IDENTITY_API_FALLBACK_BASE_URL]);
+  let lastError: Error | null = null;
+
+  for (const baseUrl of bases) {
+    try {
+      return await requestIdentityJsonFromBase<T>(baseUrl, path, init);
+    } catch (error) {
+      if (!shouldRetryIdentityRequest(error) || baseUrl === bases[bases.length - 1]) {
+        throw error;
+      }
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  throw lastError ?? new Error("Identity API request failed");
+}
+
+async function requestIdentityJsonFromBase<T>(
+  baseUrl: string,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const token = getToken();
+  const url = `${baseUrl}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: {
+        Accept: "application/json",
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...init.headers,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Identity API недоступен по ${url}. Проверьте адрес, порт и CORS. ${message}`,
+    );
+  }
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    if (response.status === 401) clearToken();
+    const message = identityErrorMessage(response.status, data);
+    throw new HttpError(
+      response.status,
+      response.status === 401 ? `${message}. Endpoint: ${url}` : message,
+    );
+  }
+  if (!isJsonObject(data)) {
+    throw new Error(`Identity returned non-JSON response from ${baseUrl}`);
+  }
+  return data as T;
+}
+
+function uniqueBaseUrls(values: string[]): string[] {
+  return values.filter((value, index) => value && values.indexOf(value) === index);
+}
+
+function shouldRetryIdentityRequest(error: unknown): boolean {
+  return (
+    !(error instanceof HttpError) ||
+    error.status === 404 ||
+    error.status === 405 ||
+    error.status >= 500
+  );
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function identityErrorMessage(status: number, data: unknown): string {
+  const detail = isJsonObject(data) ? data.detail : null;
+  const message = isJsonObject(data) ? data.message : null;
+  if (typeof detail === "string" && detail) return detail;
+  if (typeof message === "string" && message) return message;
+  if (Array.isArray(detail)) {
+    const firstMessage = detail
+      .map((item) => (isJsonObject(item) && typeof item.msg === "string" ? item.msg : null))
+      .find((item): item is string => Boolean(item));
+    if (firstMessage) return firstMessage;
+  }
+  return `Identity вернул HTTP ${status}`;
+}
+
+function localApiUrl(port: number): string {
+  if (typeof window === "undefined") return `http://localhost:${port}`;
+  return `${window.location.protocol}//${window.location.hostname}:${port}`;
+}
+
+class HttpError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
 }

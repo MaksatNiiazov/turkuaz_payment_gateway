@@ -364,6 +364,32 @@ def test_local_admin_endpoints_use_admin_key_not_integration_key(tmp_path: Path)
     assert admin_key.status_code == 200
 
 
+def test_local_admin_endpoints_accept_identity_bearer_token(tmp_path: Path, monkeypatch) -> None:
+    verified_tokens: list[str] = []
+
+    async def fake_verify_identity_admin_token(settings: Settings, token: str) -> None:
+        verified_tokens.append(token)
+
+    monkeypatch.setattr(
+        "payment_gateway.api.verify_identity_admin_token",
+        fake_verify_identity_admin_token,
+    )
+    app = create_app(
+        settings=make_settings(tmp_path / "app.db"),
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/local/transactions",
+            headers={"Authorization": "Bearer identity-token"},
+        )
+
+    assert response.status_code == 200
+    assert verified_tokens == ["identity-token"]
+
+
 def test_local_admin_endpoints_are_open_when_admin_key_is_not_configured(tmp_path: Path) -> None:
     settings = Settings(
         mkassa_api_key=SecretStr("secret"),
