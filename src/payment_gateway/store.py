@@ -104,9 +104,15 @@ class PaymentStore:
     def close(self) -> None:
         self.engine.dispose()
 
-    def upsert_transaction_payload(self, payload: BaseModel | dict[str, Any]) -> None:
+    def upsert_transaction_payload(
+        self,
+        payload: BaseModel | dict[str, Any],
+        *,
+        provider: str = "mkassa",
+        transaction_id_override: str | None = None,
+    ) -> None:
         data = self._model_to_dict(payload)
-        transaction_id = data.get("id") or data.get("transaction_id")
+        transaction_id = transaction_id_override or data.get("id") or data.get("transaction_id")
         if transaction_id is None:
             return
 
@@ -124,6 +130,7 @@ class PaymentStore:
             static_qr_link=data.get("static_qr_link"),
             metadata=data.get("metadata"),
             raw_payload=data,
+            provider=provider,
         )
 
     def upsert_transaction(
@@ -215,7 +222,7 @@ class PaymentStore:
             except IntegrityError:
                 duplicate = True
 
-        self.upsert_transaction_payload(data)
+        self.upsert_transaction_payload(data, provider=provider)
         return WebhookStoreResult(transaction_id=transaction_id, duplicate=duplicate)
 
     def get_transaction(self, transaction_id: str) -> dict[str, Any] | None:

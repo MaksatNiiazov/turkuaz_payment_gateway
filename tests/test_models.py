@@ -52,3 +52,16 @@ def test_settings_accepts_postgresql_database_url() -> None:
     )
 
     assert settings.database_url.startswith("postgresql+psycopg://")
+
+
+def test_settings_maps_integration_to_provider() -> None:
+    settings = Settings(
+        mkassa_api_key=SecretStr("secret"),
+        odengi_sid="8087710950",
+        odengi_password=SecretStr("odengi-secret"),
+        integration_keys=SecretStr("mkassa:mkassa-secret,odengi:odengi-secret"),
+        payment_provider_by_integration="odengi:odengi",
+    )
+
+    assert settings.provider_for_integration("odengi") == "odengi"
+    assert settings.provider_for_integration("mkassa") == "mkassa"

@@ -15,6 +15,7 @@ FastAPI public API
 PaymentGateway
         |
         +-- MKassaProvider -> MKassa API
+        +-- ODengiProvider -> O!Dengi API
         +-- FutureBankProvider -> another bank API
         |
         v
@@ -48,13 +49,14 @@ DATABASE_URL=sqlite:///./data/payment_gateway.db \
 
 Bank-specific logic must stay behind `PaymentProvider`.
 
-Current provider:
+Current providers:
 
 ```text
 src/payment_gateway/api.py      -> HTTP-only FastAPI layer
 src/payment_gateway/service.py  -> business use cases
 src/payment_gateway/gateway.py          -> provider registry
 src/payment_gateway/providers/mkassa.py -> low-level MKassa HTTP client and adapter
+src/payment_gateway/providers/odengi.py -> low-level O!Dengi HTTP client and adapter
 src/payment_gateway/store.py            -> SQL persistence
 ```
 
@@ -78,6 +80,21 @@ When adding another bank:
 3. Register it in `PaymentGateway`.
 4. Keep public API payloads stable unless a new business capability is required.
 
+Provider routing is intentionally internal:
+
+```env
+DEFAULT_PAYMENT_PROVIDER=mkassa
+PAYMENT_PROVIDER_BY_INTEGRATION=1c_obank:odengi,site:mkassa,pos:odengi
+```
+
+External clients still send only `X-Integration-Key`. Provider-specific callback
+URLs stay separate because banks call those endpoints directly:
+
+```text
+/api/v1/webhooks/mkassa
+/api/v1/webhooks/odengi
+```
+
 ## Public API Rule
 
 External clients should use our API and `X-Integration-Key`.
@@ -85,6 +102,7 @@ External clients should use our API and `X-Integration-Key`.
 Do not expose:
 
 - MKassa API key;
+- O!Dengi SID/password;
 - bank-internal auth;
 - bank-specific webhook secret;
 - raw bank endpoint URLs.
@@ -109,5 +127,5 @@ Frontend should use the same API as 1C/site/POS:
 - check transaction status;
 - read local audit/debug data for support screens.
 
-Do not build frontend logic around MKassa field names directly. Treat MKassa as
-one provider under the gateway.
+Do not build frontend logic around MKassa or O!Dengi field names directly. Treat
+both as providers under the gateway.

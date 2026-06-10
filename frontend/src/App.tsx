@@ -16,7 +16,14 @@ import {
   qrImageUrl,
   refreshTransaction,
 } from "./api";
-import type { AccessEvent, DynamicQrResponse, TransactionRow, ViewMode, WebhookEvent } from "./types";
+import type {
+  AccessEvent,
+  DynamicQrResponse,
+  PaymentProvider,
+  TransactionRow,
+  ViewMode,
+  WebhookEvent,
+} from "./types";
 
 const IDENTITY_API_BASE_URL = import.meta.env.VITE_IDENTITY_API_BASE_URL || "/identity-api";
 const API_DOCS_URL = backendUrl(8502, "/docs");
@@ -225,9 +232,15 @@ function App() {
   }
 
   async function handleCreateDemoQr(payload: {
+    provider?: PaymentProvider;
     amount: number;
+    branch?: number;
+    cashier?: number;
     invoice_number?: string;
     source?: string;
+    payer_code?: string;
+    payer_full_name?: string;
+    metadata?: Record<string, string>;
     is_long_living?: boolean;
   }) {
     setQrState({ loading: true, error: null });
@@ -578,6 +591,7 @@ function QrDemoPanel({
   result: DynamicQrResponse | null;
   state: LoadState;
   onCreate: (payload: {
+    provider?: PaymentProvider;
     amount: number;
     branch?: number;
     cashier?: number;
@@ -589,6 +603,7 @@ function QrDemoPanel({
     is_long_living?: boolean;
   }) => void;
 }) {
+  const [provider, setProvider] = useState<PaymentProvider>("mkassa");
   const [amount, setAmount] = useState(100);
   const [branch, setBranch] = useState("");
   const [cashier, setCashier] = useState("");
@@ -599,6 +614,7 @@ function QrDemoPanel({
   const [metadataKey1, setMetadataKey1] = useState("");
   const [metadataValue1, setMetadataValue1] = useState("");
   const [longLiving, setLongLiving] = useState(false);
+  const usesMkassaBranchFields = provider === "mkassa";
 
   const metadataCount = [
     invoiceNumber.trim(),
@@ -619,9 +635,10 @@ function QrDemoPanel({
             extraMetadata[metadataKey1.trim()] = metadataValue1.trim();
           }
           onCreate({
+            provider,
             amount,
-            branch: branch.trim() ? Number(branch) : undefined,
-            cashier: cashier.trim() ? Number(cashier) : undefined,
+            branch: usesMkassaBranchFields && branch.trim() ? Number(branch) : undefined,
+            cashier: usesMkassaBranchFields && cashier.trim() ? Number(cashier) : undefined,
             invoice_number: invoiceNumber.trim() || undefined,
             source: source.trim() || undefined,
             payer_code: payerCode.trim() || undefined,
@@ -631,6 +648,27 @@ function QrDemoPanel({
           });
         }}
       >
+        <div className="provider-toggle" role="radiogroup" aria-label="Провайдер">
+          <button
+            className={provider === "mkassa" ? "active" : ""}
+            type="button"
+            onClick={() => setProvider("mkassa")}
+          >
+            MKassa / Мбанк
+          </button>
+          <button
+            className={provider === "odengi" ? "active" : ""}
+            type="button"
+            onClick={() => setProvider("odengi")}
+          >
+            О!Деньги / О!Банк
+          </button>
+        </div>
+        <p className="hint-copy">
+          {provider === "odengi"
+            ? "О!Деньги вернет готовые ссылки qr/link_app/site_pay; branch и cashier не нужны."
+            : "MKassa принимает branch/cashier при необходимости и возвращает payment_token."}
+        </p>
         <label>
           Сумма в тыйынах
           <input
@@ -644,8 +682,9 @@ function QrDemoPanel({
           <label>
             Branch
             <input
+              disabled={!usesMkassaBranchFields}
               inputMode="numeric"
-              placeholder="если нужно"
+              placeholder={usesMkassaBranchFields ? "если нужно" : "не используется"}
               value={branch}
               onChange={(event) => setBranch(event.target.value)}
             />
@@ -653,8 +692,9 @@ function QrDemoPanel({
           <label>
             Cashier
             <input
+              disabled={!usesMkassaBranchFields}
               inputMode="numeric"
-              placeholder="если нужно"
+              placeholder={usesMkassaBranchFields ? "если нужно" : "не используется"}
               value={cashier}
               onChange={(event) => setCashier(event.target.value)}
             />
@@ -695,7 +735,7 @@ function QrDemoPanel({
             type="checkbox"
             onChange={(event) => setLongLiving(event.target.checked)}
           />
-          Long living QR
+          {provider === "odengi" ? "Reusable/static QR (long_term)" : "Long living QR"}
         </label>
         <button className="refresh" disabled={state.loading} type="submit">
           <Icon name="qr" size={16} />
@@ -723,6 +763,12 @@ function QrDemoPanel({
             <dl>
               <dt>ID</dt>
               <dd className="mono">{result.id}</dd>
+              {result.invoice_id && (
+                <>
+                  <dt>Provider invoice</dt>
+                  <dd className="mono">{result.invoice_id}</dd>
+                </>
+              )}
               <dt>Status</dt>
               <dd><span className={`status ${statusTone(result.status)}`}>{result.status}</span></dd>
               <dt>Amount</dt>
@@ -731,12 +777,36 @@ function QrDemoPanel({
             <a className="qr-link" href={result.payment_token} rel="noreferrer" target="_blank">
               Открыть ссылку QR
             </a>
+            <ProviderLinks result={result} />
             <h3>Raw payload</h3>
             <pre>{JSON.stringify(result, null, 2)}</pre>
           </>
         )}
       </aside>
     </section>
+  );
+}
+
+function ProviderLinks({ result }: { result: DynamicQrResponse }) {
+  const links = [
+    { key: "qr_url", label: "QR URL", value: result.qr_url },
+    { key: "link_app", label: "App link", value: result.link_app },
+    { key: "site_pay", label: "Site pay", value: result.site_pay },
+    { key: "qr", label: "QR image", value: result.qr },
+  ].filter(
+    (item, index, items) =>
+      item.value && items.findIndex((candidate) => candidate.value === item.value) === index,
+  );
+
+  if (links.length === 0) return null;
+  return (
+    <div className="provider-links">
+      {links.map((link) => (
+        <a className="qr-link" href={link.value || "#"} key={link.key} rel="noreferrer" target="_blank">
+          {link.label}
+        </a>
+      ))}
+    </div>
   );
 }
 

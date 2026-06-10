@@ -7,7 +7,15 @@ from pydantic import SecretStr
 
 from payment_gateway.api import create_app
 from payment_gateway.config import Settings
-from payment_gateway.models import CancelResponse, DynamicQRResponse, StaticQRResponse, Transaction
+from payment_gateway.models import (
+    BranchListResponse,
+    CancelResponse,
+    DynamicQRResponse,
+    StaticQRResponse,
+    Transaction,
+    TransactionDetailListResponse,
+    TransactionListResponse,
+)
 from payment_gateway.store import SQLitePaymentStore
 
 
@@ -59,10 +67,66 @@ class FakeMKassaClient:
         return None
 
 
+class FakeProvider:
+    def __init__(self, name: str, transaction_id: str) -> None:
+        self.name = name
+        self.transaction_id = transaction_id
+        self.last_dynamic_payload = None
+        self.canceled_transaction_id = None
+
+    async def create_dynamic_qr(self, payload):
+        self.last_dynamic_payload = payload
+        return DynamicQRResponse(
+            id=self.transaction_id,
+            amount=payload.amount,
+            status="waiting",
+            transaction_type="qr",
+            metadata=payload.metadata,
+            payment_token=f"https://example.com/{self.name}/qr",
+        )
+
+    async def create_static_qr(self, payload):
+        return StaticQRResponse(
+            id=self.transaction_id,
+            static_qr_link=f"https://example.com/{self.name}/static",
+            amount=payload.amount,
+            change_amount=payload.change_amount,
+            metadata=payload.metadata,
+        )
+
+    async def get_transaction(self, transaction_id: str):
+        return Transaction(id=transaction_id, status="paid", transaction_type="qr", amount=100)
+
+    async def cancel_transaction(self, transaction_id: str):
+        self.canceled_transaction_id = transaction_id
+        return CancelResponse(transaction_id=transaction_id, message="canceled")
+
+    async def list_transactions(self, **_: object):
+        return TransactionListResponse(count=0, results=[])
+
+    async def transaction_details(self, **_: object):
+        return TransactionDetailListResponse(count=0, results=[])
+
+    async def branches(self, **_: object):
+        return BranchListResponse(count=0, results=[])
+
+
 def make_settings(db_path: Path) -> Settings:
     return Settings(
         mkassa_api_key=SecretStr("secret"),
         integration_keys=SecretStr("pos:pos-secret,erp:erp-secret"),
+        payment_admin_api_key=SecretStr("admin-secret"),
+        database_url=f"sqlite:///{db_path}",
+    )
+
+
+def make_multi_provider_settings(db_path: Path) -> Settings:
+    return Settings(
+        mkassa_api_key=SecretStr("secret"),
+        odengi_sid="8087710950",
+        odengi_password=SecretStr("odengi-secret"),
+        integration_keys=SecretStr("mkassa:mkassa-secret,odengi:odengi-secret"),
+        payment_provider_by_integration="odengi:odengi",
         payment_admin_api_key=SecretStr("admin-secret"),
         database_url=f"sqlite:///{db_path}",
     )
@@ -563,3 +627,138 @@ def test_webhook_is_idempotent_and_does_not_require_integration_key(tmp_path: Pa
     assert second.json()["duplicate"] is True
     assert local.status_code == 200
     assert local.json()["status"] == "paid"
+
+
+def test_provider_routing_uses_integration_name_mapping(tmp_path: Path) -> None:
+    mkassa_provider = FakeProvider("mkassa", "MKSA-ROUTED")
+    odengi_provider = FakeProvider("odengi", "TIGER-ODENGI")
+    app = create_app(
+        settings=make_multi_provider_settings(tmp_path / "app.db"),
+        providers=[mkassa_provider, odengi_provider],
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        mkassa = client.post(
+            "/api/v1/qr/dynamic",
+            headers={"X-Integration-Key": "mkassa-secret"},
+            json={"amount": 100, "metadata": {"invoice_number": "TIGER-MKASSA"}},
+        )
+        odengi = client.post(
+            "/api/v1/qr/dynamic",
+            headers={"X-Integration-Key": "odengi-secret"},
+            json={"amount": 200, "metadata": {"invoice_number": "TIGER-ODENGI"}},
+        )
+        local_mkassa = client.get(
+            "/api/v1/local/transactions/MKSA-ROUTED",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        local_odengi = client.get(
+            "/api/v1/local/transactions/TIGER-ODENGI",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert mkassa.status_code == 200
+    assert mkassa.json()["id"] == "MKSA-ROUTED"
+    assert odengi.status_code == 200
+    assert odengi.json()["id"] == "TIGER-ODENGI"
+    assert mkassa_provider.last_dynamic_payload.amount == 100
+    assert odengi_provider.last_dynamic_payload.amount == 200
+    assert local_mkassa.json()["provider"] == "mkassa"
+    assert local_odengi.json()["provider"] == "odengi"
+
+
+def test_odengi_static_qr_does_not_require_mkassa_branch_fields(tmp_path: Path) -> None:
+    mkassa_provider = FakeProvider("mkassa", "MKSA-STATIC")
+    odengi_provider = FakeProvider("odengi", "TIGER-STATIC")
+    app = create_app(
+        settings=make_multi_provider_settings(tmp_path / "app.db"),
+        providers=[mkassa_provider, odengi_provider],
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        missing_mkassa_fields = client.post(
+            "/api/v1/qr/static",
+            headers={"X-Integration-Key": "mkassa-secret"},
+            json={"amount": 100, "metadata": {"invoice_number": "TIGER-MKASSA"}},
+        )
+        odengi = client.post(
+            "/api/v1/qr/static",
+            headers={"X-Integration-Key": "odengi-secret"},
+            json={"amount": 100, "metadata": {"invoice_number": "TIGER-STATIC"}},
+        )
+        local_odengi = client.get(
+            "/api/v1/local/transactions/TIGER-STATIC",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert missing_mkassa_fields.status_code == 422
+    assert missing_mkassa_fields.json()["detail"] == (
+        "branch and cashier are required for MKassa static QR"
+    )
+    assert odengi.status_code == 200
+    assert odengi.json()["id"] == "TIGER-STATIC"
+    assert local_odengi.json()["provider"] == "odengi"
+
+
+def test_admin_qr_demo_accepts_provider_query(tmp_path: Path) -> None:
+    mkassa_provider = FakeProvider("mkassa", "MKSA-ADMIN")
+    odengi_provider = FakeProvider("odengi", "TIGER-ADMIN")
+    app = create_app(
+        settings=make_multi_provider_settings(tmp_path / "app.db"),
+        providers=[mkassa_provider, odengi_provider],
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        create = client.post(
+            "/api/v1/admin/qr/dynamic",
+            params={"provider": "odengi"},
+            headers={"X-Admin-Key": "admin-secret"},
+            json={"amount": 100, "metadata": {"invoice_number": "TIGER-ADMIN"}},
+        )
+        local = client.get(
+            "/api/v1/local/transactions/TIGER-ADMIN",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert create.status_code == 200
+    assert create.json()["id"] == "TIGER-ADMIN"
+    assert odengi_provider.last_dynamic_payload.metadata == {"invoice_number": "TIGER-ADMIN"}
+    assert local.json()["provider"] == "odengi"
+
+
+def test_odengi_webhook_is_public_and_updates_order_id_transaction(tmp_path: Path) -> None:
+    app = create_app(
+        settings=make_multi_provider_settings(tmp_path / "app.db"),
+        providers=[FakeProvider("mkassa", "MKSA-1"), FakeProvider("odengi", "TIGER-1")],
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+    payload = {
+        "trans_id": "754147413495",
+        "status_pay": 3,
+        "site_id": "8087710950",
+        "order_id": "TIGER-1",
+        "amount": 100,
+        "currency": "KGS",
+        "test": 1,
+        "fields_other": {"invoice_number": "TIGER-1", "source": "tiger"},
+    }
+
+    with TestClient(app) as client:
+        first = client.post("/api/v1/webhooks/odengi", json=payload)
+        second = client.post("/api/v1/webhooks/odengi", json=payload)
+        local = client.get(
+            "/api/v1/local/transactions/TIGER-1",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert first.status_code == 200
+    assert first.json() == {"ok": True, "transaction_id": "TIGER-1", "duplicate": False}
+    assert second.status_code == 200
+    assert second.json()["duplicate"] is True
+    assert local.status_code == 200
+    assert local.json()["provider"] == "odengi"
+    assert local.json()["status"] == "paid"
+    assert local.json()["metadata"] == {"invoice_number": "TIGER-1", "source": "tiger"}

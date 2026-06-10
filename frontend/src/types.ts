@@ -1,3 +1,5 @@
+export type PaymentProvider = "mkassa" | "odengi";
+
 export type TransactionRow = {
   id: string;
   provider: string;
@@ -46,6 +48,13 @@ export type DynamicQrResponse = {
   paid_at: string | null;
   metadata: Record<string, string> | null;
   payment_token: string;
+  provider_transaction_id?: string | number | null;
+  invoice_id?: string | number | null;
+  qr?: string | null;
+  emv_qr?: string | null;
+  qr_url?: string | null;
+  link_app?: string | null;
+  site_pay?: string | null;
 };
 
 export type ViewMode = "transactions" | "webhooks" | "access" | "qr-demo";

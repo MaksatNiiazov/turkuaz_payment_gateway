@@ -74,5 +74,6 @@ async def test_payment_service_persists_provider_transaction(tmp_path) -> None:
 
     assert response.id == "FAKE-1"
     assert saved is not None
+    assert saved["provider"] == "fake"
     assert saved["status"] == "inited"
     assert saved["metadata"] == {"invoice_number": "TIGER-1"}

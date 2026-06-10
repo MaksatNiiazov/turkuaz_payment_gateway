@@ -1,4 +1,10 @@
-import type { AccessEvent, DynamicQrResponse, TransactionRow, WebhookEvent } from "./types";
+import type {
+  AccessEvent,
+  DynamicQrResponse,
+  PaymentProvider,
+  TransactionRow,
+  WebhookEvent,
+} from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
@@ -65,6 +71,7 @@ export function refreshTransaction(transactionId: string): Promise<TransactionRo
 }
 
 export function createDemoDynamicQr(payload: {
+  provider?: PaymentProvider;
   amount: number;
   branch?: number;
   cashier?: number;
@@ -80,8 +87,9 @@ export function createDemoDynamicQr(payload: {
   if (payload.source) metadata.source = payload.source;
   if (payload.payer_code) metadata.payer_code = payload.payer_code;
   if (payload.payer_full_name) metadata.payer_full_name = payload.payer_full_name;
+  const query = params({ provider: payload.provider });
 
-  return requestJson<DynamicQrResponse>("/api/v1/admin/qr/dynamic", {
+  return requestJson<DynamicQrResponse>(`/api/v1/admin/qr/dynamic${query ? `?${query}` : ""}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

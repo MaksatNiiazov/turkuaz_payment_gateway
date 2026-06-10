@@ -1,15 +1,15 @@
 # Turkuaz Payment Gateway
 
-Отдельный payment gateway микросервис. Его можно запускать самостоятельно или подключать к 1С, сайту, POS, фронту и другим сервисам через REST. MKassa сейчас подключена как первый банковский провайдер.
+Отдельный payment gateway микросервис. Его можно запускать самостоятельно или подключать к 1С, сайту, POS, фронту и другим сервисам через REST. MKassa и О!Деньги подключены как банковские провайдеры за единым API.
 
 Что внутри:
 
-- Typed async client для MKassa API.
+- Typed async clients для MKassa API и О!Деньги API.
 - REST API для динамического QR, статического QR, статусов, списков транзакций, торговых точек и деталей.
-- Webhook endpoint для callback-уведомлений от MKassa.
+- Webhook endpoints для callback-уведомлений от MKassa и О!Деньги.
 - SQL-хранилище callback-событий, аудита и последнего состояния транзакций.
 - SQLite как текущее хранилище для локального, демо и первого production-этапа.
-- Provider/gateway-слой: MKassa подключена как первый платежный провайдер, другие банки добавляются отдельными адаптерами.
+- Provider/gateway-слой: банковские детали остаются за `PaymentProvider`, внешние системы используют стабильный API.
 - Retry для временных ошибок `429/5xx`, явные таймауты, без автоматического следования redirect.
 - Валидация сумм и `metadata`: максимум 5 ключей, значение до 150 символов.
 
@@ -22,7 +22,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-Заполните `MKASSA_API_KEY` в `.env`, затем:
+Заполните нужные provider-ключи в `.env`, затем:
 
 ```bash
 uvicorn payment_gateway.main:app --host 0.0.0.0 --port 8502 --reload
@@ -113,6 +113,16 @@ X-Integration-Key: secret-for-1c
 
 Сервис распознает владельца ключа как внутреннюю метку `integration_name=1c`. Это не логин и не передается клиентом отдельно. Для одного ключа используйте тот же формат, например `INTEGRATION_KEYS=1c:secret-for-1c`.
 
+Provider выбирается внутри backend. По умолчанию используется `DEFAULT_PAYMENT_PROVIDER`.
+Для разделения по владельцу ключа задайте:
+
+```env
+DEFAULT_PAYMENT_PROVIDER=mkassa
+PAYMENT_PROVIDER_BY_INTEGRATION=1c_obank:odengi,site:mkassa,pos:odengi
+```
+
+Внешние клиенты все равно передают только `X-Integration-Key`, без отдельного `provider`.
+
 Админские endpoints `/api/v1/local/...` защищаются отдельно через `PAYMENT_ADMIN_API_KEY`. React-сервис добавляет его к backend-запросам как `X-Admin-Key`; этот ключ не нужно передавать интеграторам.
 
 | Метод | URL | Назначение |
@@ -128,6 +138,7 @@ X-Integration-Key: secret-for-1c
 | `GET` | `/api/v1/transaction-details` | Получить детальную информацию за период |
 | `GET` | `/api/v1/branches` | Получить список торговых точек и кассиров |
 | `POST` | `/api/v1/webhooks/mkassa` | Принять callback от MKassa |
+| `POST` | `/api/v1/webhooks/odengi` | Принять callback/result_url от О!Деньги |
 | `GET` | `/api/v1/integration` | Проверить, какой `integration_name` распознан по ключу |
 | `GET` | `/api/v1/local/transactions/{transaction_id}` | Посмотреть сохраненное локальное состояние |
 | `GET` | `/api/v1/local/webhooks` | Посмотреть последние webhook-события |
@@ -135,7 +146,8 @@ X-Integration-Key: secret-for-1c
 
 `branch` и `cashier` в платежных endpoint'ах являются реквизитами MKassa. Они не
 связаны с филиалами Turkuaz, не используются для доступа пользователей к сервисам и
-не требуют отдельного permission.
+не требуют отдельного permission. Для О!Деньги эти поля не нужны; provider создает счет
+через `createInvoice` и возвращает готовые `qr`, `qr_url`, `link_app` и `site_pay`.
 
 ## Примеры
 
@@ -165,6 +177,15 @@ https://your-domain.example/api/v1/webhooks/mkassa
 
 По документу MKassa callback поддерживается только на домене с действующим SSL-сертификатом и портом `443`.
 
+Webhook/result_url для О!Деньги:
+
+```text
+https://your-domain.example/api/v1/webhooks/odengi
+```
+
+Для sandbox О!Деньги используйте тестовое приложение `Мой О! + Банк (T)`.
+`ODENGI_PASSWORD` в локальном `.env` берите в кавычки, если пароль содержит `#`.
+
 ## Проверки
 
 ```bash
@@ -174,4 +195,4 @@ ruff check .
 
 ## Заметки по интеграции
 
-Суммы передаются в тыйынах. Динамическая QR-транзакция по умолчанию ждет оплату 60 секунд. При запросе статуса MKassa может отвечать до 15 секунд, поэтому `REQUEST_TIMEOUT_READ` по умолчанию выставлен в 20 секунд.
+Суммы передаются в тыйынах. Динамическая QR-транзакция MKassa по умолчанию ждет оплату 60 секунд. О!Деньги принимает сумму в копейках/тыйынах и при `is_long_living=true` получает `long_term=1`, то есть reusable/static QR по их API. При запросе статуса MKassa может отвечать до 15 секунд, поэтому `REQUEST_TIMEOUT_READ` по умолчанию выставлен в 20 секунд.

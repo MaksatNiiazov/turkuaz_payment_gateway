@@ -3,8 +3,13 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+PROVIDER_MKASSA = "mkassa"
+PROVIDER_ODENGI = "odengi"
+SUPPORTED_PAYMENT_PROVIDERS = {PROVIDER_MKASSA, PROVIDER_ODENGI}
 
 
 class Settings(BaseSettings):
@@ -16,9 +21,25 @@ class Settings(BaseSettings):
     )
 
     app_env: str = Field("development", alias="APP_ENV")
-    default_payment_provider: str = Field("mkassa", alias="DEFAULT_PAYMENT_PROVIDER")
+    default_payment_provider: str = Field(PROVIDER_MKASSA, alias="DEFAULT_PAYMENT_PROVIDER")
+    payment_provider_by_integration: str | None = Field(
+        None,
+        alias="PAYMENT_PROVIDER_BY_INTEGRATION",
+        description="Comma-separated integration_name:provider pairs.",
+    )
     mkassa_base_url: str = Field("https://api.mkassa.kg", alias="MKASSA_BASE_URL")
-    mkassa_api_key: SecretStr = Field(..., alias="MKASSA_API_KEY")
+    mkassa_api_key: SecretStr | None = Field(None, alias="MKASSA_API_KEY")
+    odengi_base_url: str = Field(
+        "https://mw-api-test.dengi.kg/api/json/json.php",
+        alias="ODENGI_BASE_URL",
+    )
+    odengi_sid: str | None = Field(None, alias="ODENGI_SID")
+    odengi_password: SecretStr | None = Field(None, alias="ODENGI_PASSWORD")
+    odengi_api_version: int = Field(1005, alias="ODENGI_API_VERSION")
+    odengi_lang: str = Field("ru", alias="ODENGI_LANG")
+    odengi_test: int = Field(1, alias="ODENGI_TEST", ge=0, le=1)
+    odengi_currency: str = Field("KGS", alias="ODENGI_CURRENCY")
+    odengi_result_url: str | None = Field(None, alias="ODENGI_RESULT_URL")
     integration_keys: SecretStr | None = Field(None, alias="INTEGRATION_KEYS")
     payment_admin_api_key: SecretStr | None = Field(None, alias="PAYMENT_ADMIN_API_KEY")
     database_url: str = Field("sqlite:///./data/payment_gateway.db", alias="DATABASE_URL")
@@ -38,12 +59,58 @@ class Settings(BaseSettings):
             raise ValueError("MKASSA_BASE_URL must not be empty")
         return normalized
 
+    @field_validator("default_payment_provider")
+    @classmethod
+    def validate_default_payment_provider(cls, value: str) -> str:
+        return cls._normalize_provider_name(value)
+
     @field_validator("mkassa_api_key")
     @classmethod
-    def validate_mkassa_api_key(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
+    def validate_mkassa_api_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not value.get_secret_value().strip():
             raise ValueError("MKASSA_API_KEY must not be empty")
         return value
+
+    @field_validator("odengi_base_url", "odengi_result_url")
+    @classmethod
+    def normalize_optional_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        return normalized.rstrip("/") if value != normalized else normalized
+
+    @field_validator("odengi_sid")
+    @classmethod
+    def normalize_odengi_sid(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("odengi_password")
+    @classmethod
+    def validate_odengi_password(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not value.get_secret_value().strip():
+            raise ValueError("ODENGI_PASSWORD must not be empty")
+        return value
+
+    @field_validator("odengi_lang")
+    @classmethod
+    def normalize_odengi_lang(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"ru", "en"}:
+            raise ValueError("ODENGI_LANG must be ru or en")
+        return normalized
+
+    @field_validator("odengi_currency")
+    @classmethod
+    def normalize_odengi_currency(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if len(normalized) != 3:
+            raise ValueError("ODENGI_CURRENCY must be a 3-letter code")
+        return normalized
 
     @field_validator("database_url")
     @classmethod
@@ -55,6 +122,17 @@ class Settings(BaseSettings):
             )
         return value
 
+    @model_validator(mode="after")
+    def validate_provider_credentials(self) -> Settings:
+        required = {self.default_payment_provider, *self.integration_provider_map.values()}
+        if PROVIDER_MKASSA in required and self.mkassa_api_key is None:
+            raise ValueError("MKASSA_API_KEY is required when mkassa provider is enabled")
+        if PROVIDER_ODENGI in required and (
+            self.odengi_sid is None or self.odengi_password is None
+        ):
+            raise ValueError("ODENGI_SID and ODENGI_PASSWORD are required when odengi provider is enabled")
+        return self
+
     @property
     def database_path(self) -> Path:
         raw_path = self.database_url.removeprefix("sqlite:///")
@@ -65,10 +143,18 @@ class Settings(BaseSettings):
 
     @property
     def mkassa_authorization_header(self) -> str:
+        if self.mkassa_api_key is None:
+            raise ValueError("MKASSA_API_KEY is not configured")
         api_key = self.mkassa_api_key.get_secret_value().strip()
         if api_key.lower().startswith("api-key "):
             return api_key
         return f"api-key {api_key}"
+
+    @property
+    def odengi_password_value(self) -> str:
+        if self.odengi_password is None:
+            raise ValueError("ODENGI_PASSWORD is not configured")
+        return self.odengi_password.get_secret_value().strip()
 
     @property
     def integration_key_pool(self) -> dict[str, str]:
@@ -77,6 +163,19 @@ class Settings(BaseSettings):
             if raw_pool:
                 return self._parse_key_pool(raw_pool)
         return {}
+
+    @property
+    def integration_provider_map(self) -> dict[str, str]:
+        if self.payment_provider_by_integration:
+            return self._parse_provider_map(self.payment_provider_by_integration)
+        return {}
+
+    def provider_for_integration(self, integration_name: str | None) -> str:
+        if integration_name:
+            mapped = self.integration_provider_map.get(integration_name)
+            if mapped:
+                return mapped
+        return self.default_payment_provider
 
     @staticmethod
     def _parse_key_pool(raw_pool: str) -> dict[str, str]:
@@ -96,6 +195,33 @@ class Settings(BaseSettings):
                 raise ValueError("INTEGRATION_KEYS contains an empty integration_name or key")
             pool[integration_name] = key
         return pool
+
+    @classmethod
+    def _parse_provider_map(cls, raw_map: str) -> dict[str, str]:
+        provider_map: dict[str, str] = {}
+        for item in raw_map.split(","):
+            entry = item.strip()
+            if not entry:
+                continue
+            if ":" not in entry:
+                raise ValueError(
+                    "PAYMENT_PROVIDER_BY_INTEGRATION must use integration_name:provider pairs"
+                )
+            integration_name, provider = entry.split(":", 1)
+            integration_name = integration_name.strip()
+            provider = cls._normalize_provider_name(provider)
+            if not integration_name:
+                raise ValueError("PAYMENT_PROVIDER_BY_INTEGRATION contains an empty integration_name")
+            provider_map[integration_name] = provider
+        return provider_map
+
+    @staticmethod
+    def _normalize_provider_name(value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in SUPPORTED_PAYMENT_PROVIDERS:
+            supported = ", ".join(sorted(SUPPORTED_PAYMENT_PROVIDERS))
+            raise ValueError(f"Unsupported payment provider '{value}'. Supported: {supported}")
+        return normalized
 
 
 @lru_cache

@@ -18,3 +18,36 @@
   color: var(--teal);
   font-weight: 800;
 }
+
+.provider-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border, #d7dee8);
+  border-radius: 8px;
+  background: var(--surface-muted, #f4f7f9);
+}
+
+.provider-toggle button {
+  border: 0;
+  border-radius: 6px;
+  padding: 9px 12px;
+  background: transparent;
+  color: var(--text-muted, #64748b);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.provider-toggle button.active {
+  background: var(--surface, #ffffff);
+  color: var(--text, #0f172a);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 10%);
+}
+
+.provider-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}

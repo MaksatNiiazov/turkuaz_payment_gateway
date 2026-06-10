@@ -11,13 +11,14 @@ from fastapi import APIRouter, Body, Depends, FastAPI, Form, HTTPException, Quer
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 
-from payment_gateway.config import Settings, get_settings
-from payment_gateway.gateway import PaymentGateway
+from payment_gateway.config import PROVIDER_MKASSA, PROVIDER_ODENGI, Settings, get_settings
+from payment_gateway.gateway import PaymentGateway, PaymentProvider
 from payment_gateway.models import (
     BranchListResponse,
     CancelResponse,
     DynamicQRCreate,
     DynamicQRResponse,
+    ODengiWebhookPayload,
     StaticQRCreate,
     StaticQRResponse,
     Transaction,
@@ -31,6 +32,12 @@ from payment_gateway.providers.mkassa import (
     MKassaAPIError,
     MKassaProvider,
     MKassaTransportError,
+)
+from payment_gateway.providers.odengi import (
+    AsyncODengiClient,
+    ODengiAPIError,
+    ODengiProvider,
+    ODengiTransportError,
 )
 from payment_gateway.service import PaymentService
 from payment_gateway.store import PaymentStore
@@ -314,6 +321,7 @@ def create_app(
     *,
     settings: Settings | None = None,
     client: AsyncMKassaClient | None = None,
+    providers: list[PaymentProvider] | None = None,
     store: PaymentStore | None = None,
 ) -> FastAPI:
     @asynccontextmanager
@@ -322,9 +330,17 @@ def create_app(
         resolved_store = store or PaymentStore(resolved_settings.database_url)
         if resolved_settings.auto_create_schema:
             resolved_store.initialize()
-        resolved_client = client or AsyncMKassaClient.from_settings(resolved_settings)
+        owned_clients: list[AsyncMKassaClient | AsyncODengiClient] = []
+        resolved_client: AsyncMKassaClient | None = None
+        if providers is None:
+            resolved_providers, owned_clients, resolved_client = build_payment_providers(
+                resolved_settings,
+                mkassa_client=client,
+            )
+        else:
+            resolved_providers = providers
         resolved_gateway = PaymentGateway(
-            [MKassaProvider(resolved_client)],
+            resolved_providers,
             default_provider=resolved_settings.default_payment_provider,
         )
         resolved_payment_service = PaymentService(
@@ -340,8 +356,8 @@ def create_app(
         try:
             yield
         finally:
-            if client is None:
-                await resolved_client.aclose()
+            for owned_client in owned_clients:
+                await owned_client.aclose()
             if store is None:
                 resolved_store.close()
 
@@ -504,7 +520,10 @@ def create_app(
             }
         ),
     ) -> DynamicQRResponse:
-        return await payments(request).create_dynamic_qr(payload)
+        return await payments(request).create_dynamic_qr(
+            payload,
+            provider_name=provider_name_for_request(request),
+        )
 
     @protected_router.post(
         "/qr/static",
@@ -551,7 +570,12 @@ def create_app(
             }
         ),
     ) -> StaticQRResponse:
-        return await payments(request).create_static_qr(payload)
+        provider_name = provider_name_for_request(request)
+        validate_static_qr_payload_for_provider(payload, provider_name)
+        return await payments(request).create_static_qr(
+            payload,
+            provider_name=provider_name,
+        )
 
     @protected_router.post(
         "/qr/dynamic/form",
@@ -618,7 +642,10 @@ def create_app(
                 metadata_value_1=metadata_value_1,
             ),
         )
-        return await payments(request).create_dynamic_qr(payload)
+        return await payments(request).create_dynamic_qr(
+            payload,
+            provider_name=provider_name_for_request(request),
+        )
 
     @protected_router.get(
         "/qr/render",
@@ -728,7 +755,10 @@ def create_app(
                 metadata_value_1=metadata_value_1,
             ),
         )
-        return await payments(request).create_static_qr(payload)
+        return await payments(request).create_static_qr(
+            payload,
+            provider_name=provider_name_for_request(request),
+        )
 
     @protected_router.get(
         "/transactions/{transaction_id}",
@@ -739,7 +769,10 @@ def create_app(
         response_description="Current MKassa transaction state.",
     )
     async def get_transaction(request: Request, transaction_id: str) -> Transaction:
-        return await payments(request).get_transaction(transaction_id)
+        return await payments(request).get_transaction(
+            transaction_id,
+            provider_name=provider_name_for_request(request),
+        )
 
     @protected_router.put(
         "/transactions/{transaction_id}/cancel",
@@ -753,7 +786,10 @@ def create_app(
         response_description="MKassa cancel response.",
     )
     async def cancel_transaction(request: Request, transaction_id: str) -> CancelResponse:
-        return await payments(request).cancel_transaction(transaction_id)
+        return await payments(request).cancel_transaction(
+            transaction_id,
+            provider_name=provider_name_for_request(request),
+        )
 
     @protected_router.get(
         "/transactions",
@@ -796,6 +832,7 @@ def create_app(
             end_date=end_date,
             branch=branch,
             cashier=cashier,
+            provider_name=provider_name_for_request(request),
         )
 
     @protected_router.get(
@@ -816,6 +853,7 @@ def create_app(
             start_date=start_date,
             end_date=end_date,
             page=page,
+            provider_name=provider_name_for_request(request),
         )
 
     @protected_router.get(
@@ -833,7 +871,10 @@ def create_app(
         request: Request,
         page: Annotated[int | None, Query(ge=1, description="MKassa page number.")] = None,
     ) -> BranchListResponse:
-        return await payments(request).branches(page=page)
+        return await payments(request).branches(
+            page=page,
+            provider_name=provider_name_for_request(request),
+        )
 
     @protected_router.get(
         "/integration",
@@ -926,8 +967,12 @@ def create_app(
     async def create_admin_dynamic_qr(
         request: Request,
         payload: DynamicQRCreate,
+        provider: Annotated[
+            str | None,
+            Query(description="Optional provider for admin testing: mkassa or odengi."),
+        ] = None,
     ) -> DynamicQRResponse:
-        return await payments(request).create_dynamic_qr(payload)
+        return await payments(request).create_dynamic_qr(payload, provider_name=provider)
 
     @admin_router.get(
         "/admin/qr/render",
@@ -981,7 +1026,26 @@ def create_app(
         request: Request,
         payload: WebhookPayload,
     ) -> WebhookAck:
-        result = payments(request).save_webhook(payload)
+        result = payments(request).save_webhook(payload, provider_name=PROVIDER_MKASSA)
+        return WebhookAck(transaction_id=result.transaction_id, duplicate=result.duplicate)
+
+    @webhook_router.post(
+        "/webhooks/odengi",
+        response_model=WebhookAck,
+        tags=["webhooks"],
+        summary="Receive O!Dengi webhook",
+        description=(
+            "Public callback endpoint for O!Dengi `result_url`. Does not require "
+            "`X-Integration-Key`."
+        ),
+        response_description="Webhook acceptance acknowledgement.",
+    )
+    async def odengi_webhook(
+        request: Request,
+        payload: ODengiWebhookPayload,
+    ) -> WebhookAck:
+        normalized = normalize_odengi_webhook(payload)
+        result = payments(request).save_webhook(normalized, provider_name=PROVIDER_ODENGI)
         return WebhookAck(transaction_id=result.transaction_id, duplicate=result.duplicate)
 
     app.include_router(protected_router)
@@ -989,11 +1053,36 @@ def create_app(
     app.include_router(webhook_router)
     app.add_exception_handler(MKassaAPIError, mkassa_api_error_handler)
     app.add_exception_handler(MKassaTransportError, mkassa_transport_error_handler)
+    app.add_exception_handler(ODengiAPIError, odengi_api_error_handler)
+    app.add_exception_handler(ODengiTransportError, odengi_transport_error_handler)
     return app
 
 
 def settings_from_request(request: Request) -> Settings:
     return request.app.state.settings
+
+
+def build_payment_providers(
+    settings: Settings,
+    *,
+    mkassa_client: AsyncMKassaClient | None = None,
+) -> tuple[list[PaymentProvider], list[AsyncMKassaClient | AsyncODengiClient], AsyncMKassaClient | None]:
+    providers: list[PaymentProvider] = []
+    owned_clients: list[AsyncMKassaClient | AsyncODengiClient] = []
+    resolved_mkassa_client: AsyncMKassaClient | None = None
+
+    if mkassa_client is not None or settings.mkassa_api_key is not None:
+        resolved_mkassa_client = mkassa_client or AsyncMKassaClient.from_settings(settings)
+        providers.append(MKassaProvider(resolved_mkassa_client))
+        if mkassa_client is None:
+            owned_clients.append(resolved_mkassa_client)
+
+    if settings.odengi_sid is not None and settings.odengi_password is not None:
+        odengi_client = AsyncODengiClient.from_settings(settings)
+        providers.append(ODengiProvider(odengi_client))
+        owned_clients.append(odengi_client)
+
+    return providers, owned_clients, resolved_mkassa_client
 
 
 def payments(request: Request) -> PaymentService:
@@ -1002,6 +1091,48 @@ def payments(request: Request) -> PaymentService:
 
 def storage(request: Request) -> PaymentStore:
     return request.app.state.store
+
+
+def provider_name_for_request(request: Request) -> str:
+    integration_name = getattr(request.state, "integration_name", None)
+    return settings_from_request(request).provider_for_integration(integration_name)
+
+
+def validate_static_qr_payload_for_provider(payload: StaticQRCreate, provider_name: str) -> None:
+    if provider_name == PROVIDER_MKASSA and (payload.branch is None or payload.cashier is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="branch and cashier are required for MKassa static QR",
+        )
+
+
+def normalize_odengi_webhook(payload: ODengiWebhookPayload) -> WebhookPayload:
+    transaction_id = payload.order_id or payload.trans_id
+    if transaction_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="O!Dengi webhook must include order_id or trans_id",
+        )
+
+    metadata = payload.fields_other if isinstance(payload.fields_other, dict) else {}
+    return WebhookPayload(
+        id=transaction_id,
+        status=odengi_webhook_status(payload.status_pay),
+        amount=payload.amount,
+        metadata=metadata,
+        odengi_payload=payload.model_dump(mode="json", exclude_none=True),
+    )
+
+
+def odengi_webhook_status(value: int | str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"3", "approved"}:
+        return "paid"
+    if normalized in {"2", "canceled", "cancelled"}:
+        return "canceled"
+    if normalized in {"1", "processing"}:
+        return "waiting"
+    return "unknown"
 
 
 def build_form_metadata(
@@ -1092,6 +1223,24 @@ async def mkassa_api_error_handler(_: Request, exc: MKassaAPIError):
 
 
 async def mkassa_transport_error_handler(_: Request, exc: MKassaTransportError):
+    return JSONResponse(
+        status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+        content={"message": str(exc)},
+    )
+
+
+async def odengi_api_error_handler(_: Request, exc: ODengiAPIError):
+    return JSONResponse(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        content={
+            "message": "O!Dengi API returned an error",
+            "odengi_status_code": exc.status_code,
+            "odengi_response": exc.response_text,
+        },
+    )
+
+
+async def odengi_transport_error_handler(_: Request, exc: ODengiTransportError):
     return JSONResponse(
         status_code=status.HTTP_504_GATEWAY_TIMEOUT,
         content={"message": str(exc)},

@@ -223,14 +223,16 @@ class StaticQRCreate(MetadataRequestMixin):
         }
     )
 
-    branch: int = Field(
+    branch: int | None = Field(
+        default=None,
         gt=0,
-        description="Required MKassa branch ID for static QR.",
+        description="MKassa branch ID. Not required by O!Dengi.",
         examples=[236366],
     )
-    cashier: int = Field(
+    cashier: int | None = Field(
+        default=None,
         gt=0,
-        description="Required MKassa cashier ID for static QR.",
+        description="MKassa cashier ID. Not required by O!Dengi.",
         examples=[130610],
     )
     amount: int | None = Field(
@@ -402,6 +404,35 @@ class WebhookPayload(APIModel):
     @field_validator("amount", mode="before")
     @classmethod
     def validate_webhook_amount(cls, value: Any) -> int | None:
+        return parse_amount(value)
+
+
+class ODengiWebhookPayload(APIModel):
+    trans_id: str | None = Field(default=None, description="O!Dengi payment transaction ID.")
+    status_pay: int | str | None = Field(default=None, description="1=pending, 2=canceled, 3=paid.")
+    site_id: str | None = Field(default=None, description="O!Dengi merchant ID.")
+    order_id: str | None = Field(default=None, description="Merchant order ID.")
+    amount: int | None = Field(default=None, description="Amount in tyiyn.")
+    currency: str | None = Field(default=None, description="Payment currency.")
+    mktime: str | int | None = Field(default=None, description="Provider callback timestamp.")
+    test: int | str | None = Field(default=None, description="1=test, 0=production.")
+    fields_other: Any = Field(default=None, description="Merchant metadata echoed by O!Dengi.")
+    fields_app: Any = Field(default=None, description="Payer app metadata from O!Dengi.")
+    hash: str | None = Field(default=None, description="O!Dengi callback signature.")
+    account_id: str | None = None
+    mobile: str | None = None
+    fname: str | None = None
+    lname: str | None = None
+    email: str | None = None
+
+    @field_validator("trans_id", "order_id", mode="before")
+    @classmethod
+    def validate_optional_ids(cls, value: Any) -> str | None:
+        return parse_optional_string(value)
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def validate_odengi_amount(cls, value: Any) -> int | None:
         return parse_amount(value)
 
 
