@@ -364,6 +364,25 @@ def test_local_admin_endpoints_use_admin_key_not_integration_key(tmp_path: Path)
     assert admin_key.status_code == 200
 
 
+def test_local_admin_endpoints_are_open_when_admin_key_is_not_configured(tmp_path: Path) -> None:
+    settings = Settings(
+        mkassa_api_key=SecretStr("secret"),
+        integration_keys=SecretStr("pos:pos-secret"),
+        payment_admin_api_key=None,
+        database_url=f"sqlite:///{tmp_path / 'app.db'}",
+    )
+    app = create_app(
+        settings=settings,
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/local/transactions")
+
+    assert response.status_code == 200
+
+
 def test_admin_can_cancel_unpaid_dynamic_qr(tmp_path: Path) -> None:
     fake_client = FakeMKassaClient()
     app = create_app(
