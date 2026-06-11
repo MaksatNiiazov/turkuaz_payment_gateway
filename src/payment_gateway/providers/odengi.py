@@ -25,6 +25,7 @@ from payment_gateway.models import (
     TransactionDetailListResponse,
     TransactionListResponse,
 )
+from payment_gateway.providers.base import PaymentProvider
 
 
 TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -468,7 +469,7 @@ class AsyncODengiClient:
 
 
 @dataclass(frozen=True)
-class ODengiProvider:
+class ODengiProvider(PaymentProvider):
     client: AsyncODengiClient
     name: str = "odengi"
 

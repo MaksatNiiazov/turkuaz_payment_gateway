@@ -16,6 +16,7 @@ from payment_gateway.models import (
     TransactionDetailListResponse,
     TransactionListResponse,
 )
+from payment_gateway.providers.base import PaymentProvider
 from payment_gateway.store import SQLitePaymentStore
 
 
@@ -67,7 +68,7 @@ class FakeMKassaClient:
         return None
 
 
-class FakeProvider:
+class FakeProvider(PaymentProvider):
     def __init__(self, name: str, transaction_id: str) -> None:
         self.name = name
         self.transaction_id = transaction_id

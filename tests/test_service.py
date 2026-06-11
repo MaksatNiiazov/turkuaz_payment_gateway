@@ -15,10 +15,11 @@ from payment_gateway.models import (
     TransactionListResponse,
 )
 from payment_gateway.service import PaymentService
+from payment_gateway.providers.base import PaymentProvider
 from payment_gateway.store import SQLitePaymentStore
 
 
-class FakeProvider:
+class FakeProvider(PaymentProvider):
     name = "fake"
 
     def __init__(self) -> None:

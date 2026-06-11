@@ -22,6 +22,7 @@ from payment_gateway.models import (
     TransactionFilters,
     TransactionListResponse,
 )
+from payment_gateway.providers.base import PaymentProvider
 
 
 TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -296,7 +297,7 @@ class AsyncMKassaClient:
 
 
 @dataclass(frozen=True)
-class MKassaProvider:
+class MKassaProvider(PaymentProvider):
     client: AsyncMKassaClient
     name: str = "mkassa"
 
