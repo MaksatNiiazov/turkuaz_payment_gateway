@@ -174,11 +174,16 @@ curl -X POST http://localhost:8502/api/v1/qr/dynamic \
     "cashier": 1234,
     "is_long_living": true,
     "metadata": {
+      "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
       "invoice_number": "TIGER-FACTURE-1001",
       "source": "tiger"
     }
   }'
 ```
+
+Для 1С `metadata.invoice_id` должен быть стабильным ID ссылки накладной из 1С.
+`metadata.invoice_number` можно передавать дополнительно для отображения и поиска
+человеком, но бизнес-связку платежей нужно строить по `invoice_id`.
 
 Webhook URL, который нужно передать ответственным лицам MKassa:
 

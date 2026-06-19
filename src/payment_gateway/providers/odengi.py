@@ -392,7 +392,7 @@ class AsyncODengiClient:
         response_metadata.setdefault("order_id", order_id)
         invoice_id = response_data.get("invoice_id")
         if invoice_id is not None:
-            response_metadata["invoice_id"] = str(invoice_id)
+            response_metadata["provider_invoice_id"] = str(invoice_id)
         return response_metadata
 
     @staticmethod
@@ -401,7 +401,14 @@ class AsyncODengiClient:
 
     @staticmethod
     def _order_id(metadata: Mapping[str, str]) -> str:
-        order_id = metadata.get("order_id") or metadata.get("invoice_number")
+        order_id = (
+            metadata.get("invoice_id")
+            or metadata.get("external_invoice_id")
+            or metadata.get("onec_invoice_id")
+            or metadata.get("invoice_uid")
+            or metadata.get("order_id")
+            or metadata.get("invoice_number")
+        )
         if order_id:
             return order_id[:64]
         return f"TGW-{uuid.uuid4().hex[:20]}"

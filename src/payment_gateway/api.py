@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from payment_gateway.config import PROVIDER_MKASSA, PROVIDER_ODENGI, Settings, get_settings
-from payment_gateway.gateway import PaymentGateway, PaymentProvider
+from payment_gateway.gateway import PaymentGateway
 from payment_gateway.models import (
     BranchListResponse,
     CancelResponse,
@@ -28,6 +28,7 @@ from payment_gateway.models import (
     WebhookAck,
     WebhookPayload,
 )
+from payment_gateway.providers.base import PaymentProvider
 from payment_gateway.providers.mkassa import (
     AsyncMKassaClient,
     MKassaAPIError,
@@ -215,6 +216,7 @@ ADMIN_HTML = """
       const previousLimit = document.getElementById("limit")?.value || "50";
       const previousStatus = document.getElementById("status")?.value || "";
       const previousProvider = document.getElementById("provider")?.value || "";
+      const previousInvoiceId = document.getElementById("invoice_id")?.value || "";
       controls.innerHTML = "";
       const title = document.createElement("h2");
       title.textContent = kind;
@@ -233,11 +235,15 @@ ADMIN_HTML = """
         status.id = "status";
         status.placeholder = "status";
         status.value = previousStatus;
+        const invoiceId = document.createElement("input");
+        invoiceId.id = "invoice_id";
+        invoiceId.placeholder = "invoice_id";
+        invoiceId.value = previousInvoiceId;
         const provider = document.createElement("input");
         provider.id = "provider";
         provider.placeholder = "provider";
         provider.value = previousProvider;
-        controls.append(" Статус: ", status, " Provider: ", provider, " ");
+        controls.append(" Статус: ", status, " Invoice ID: ", invoiceId, " Provider: ", provider, " ");
       }
 
       const refresh = document.createElement("button");
@@ -251,8 +257,10 @@ ADMIN_HTML = """
       renderControls("Транзакции");
       const params = new URLSearchParams({ limit: document.getElementById("limit").value || "50" });
       const status = document.getElementById("status").value.trim();
+      const invoiceId = document.getElementById("invoice_id").value.trim();
       const provider = document.getElementById("provider").value.trim();
       if (status) params.set("status", status);
+      if (invoiceId) params.set("invoice_id", invoiceId);
       if (provider) params.set("provider", provider);
       const rows = await fetchJson(`/api/v1/local/transactions?${params.toString()}`);
       const columns = [
@@ -263,6 +271,7 @@ ADMIN_HTML = """
         { key: "amount", label: "Amount" },
         { key: "branch", label: "Branch" },
         { key: "cashier", label: "Cashier" },
+        { key: "external_invoice_id", label: "Invoice ID" },
         { key: "metadata", label: "Metadata" },
         { key: "updated_at", label: "Updated" },
       ];
@@ -371,7 +380,8 @@ def create_app(
             "Standalone adapter for MKassa QR payments.\n\n"
             "Use **Authorize** and paste the issued `X-Integration-Key` once. "
             "Amounts are sent in **tyiyn**: `100` means `1 som`. "
-            "For Tiger facture codes use `metadata.invoice_number`."
+            "For Tiger facture codes use `metadata.invoice_number`. "
+            "For stable 1C invoice binding use `metadata.invoice_id`."
         ),
         lifespan=lifespan,
         openapi_tags=OPENAPI_TAGS,
@@ -501,6 +511,7 @@ def create_app(
                     "value": {
                         "amount": 100,
                         "metadata": {
+                            "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                             "invoice_number": "TIGER-FACTURE-1001",
                             "source": "tiger",
                         },
@@ -515,6 +526,7 @@ def create_app(
                         "cashier": 130610,
                         "is_long_living": True,
                         "metadata": {
+                            "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                             "invoice_number": "TIGER-FACTURE-1001",
                             "source": "tiger",
                         },
@@ -551,6 +563,7 @@ def create_app(
                         "amount": 100,
                         "change_amount": False,
                         "metadata": {
+                            "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                             "invoice_number": "TIGER-FACTURE-1001",
                             "source": "tiger",
                         },
@@ -564,6 +577,7 @@ def create_app(
                         "amount": 100,
                         "change_amount": False,
                         "metadata": {
+                            "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                             "payer_code": "12345678901234",
                             "payer_full_name": "ОсОО Тест",
                             "invoice_number": "TIGER-FACTURE-1001",
@@ -610,6 +624,10 @@ def create_app(
             str | None,
             Form(description="Tiger facture code. Goes to metadata.invoice_number."),
         ] = None,
+        invoice_id: Annotated[
+            str | None,
+            Form(description="Stable 1C invoice ID. Goes to metadata.invoice_id."),
+        ] = None,
         source: Annotated[
             str | None,
             Form(description="Optional source label. Example: tiger."),
@@ -638,6 +656,7 @@ def create_app(
             is_long_living=is_long_living,
             metadata=build_form_metadata(
                 invoice_number=invoice_number,
+                invoice_id=invoice_id,
                 source=source,
                 payer_code=payer_code,
                 payer_full_name=payer_full_name,
@@ -723,6 +742,10 @@ def create_app(
             str | None,
             Form(description="Tiger facture code. Goes to metadata.invoice_number."),
         ] = None,
+        invoice_id: Annotated[
+            str | None,
+            Form(description="Stable 1C invoice ID. Goes to metadata.invoice_id."),
+        ] = None,
         source: Annotated[
             str | None,
             Form(description="Optional source label. Example: tiger."),
@@ -751,6 +774,7 @@ def create_app(
             change_amount=change_amount,
             metadata=build_form_metadata(
                 invoice_number=invoice_number,
+                invoice_id=invoice_id,
                 source=source,
                 payer_code=payer_code,
                 payer_full_name=payer_full_name,
@@ -898,6 +922,10 @@ def create_app(
         request: Request,
         limit: Annotated[int, Query(ge=1, le=500, description="Maximum rows to return.")] = 50,
         provider: Annotated[str | None, Query(description="Optional provider filter.")] = None,
+        invoice_id: Annotated[
+            str | None,
+            Query(description="Optional stable 1C invoice ID filter."),
+        ] = None,
         status_filter: Annotated[
             str | None,
             Query(alias="status", description="Optional transaction status filter."),
@@ -906,6 +934,7 @@ def create_app(
         return storage(request).list_transactions(
             limit=limit,
             provider=provider,
+            external_invoice_id=invoice_id,
             status=status_filter,
         )
 
@@ -1141,6 +1170,7 @@ def odengi_webhook_status(value: int | str | None) -> str:
 def build_form_metadata(
     *,
     invoice_number: str | None = None,
+    invoice_id: str | None = None,
     source: str | None = None,
     payer_code: str | None = None,
     payer_full_name: str | None = None,
@@ -1149,6 +1179,7 @@ def build_form_metadata(
 ) -> dict[str, str] | None:
     metadata: dict[str, str] = {}
     for key, value in {
+        "invoice_id": invoice_id,
         "invoice_number": invoice_number,
         "source": source,
         "payer_code": payer_code,

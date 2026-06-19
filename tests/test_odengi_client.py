@@ -45,7 +45,7 @@ async def test_create_dynamic_qr_sends_signed_odengi_request() -> None:
             expected_date_life + timedelta(minutes=1)
         )
         assert data == {
-            "order_id": "TIGER-FACTURE-1001",
+            "order_id": "550e8400-e29b-41d4-a716-446655440000",
             "desc": "TIGER-FACTURE-1001",
             "amount": 100,
             "currency": "KGS",
@@ -53,6 +53,7 @@ async def test_create_dynamic_qr_sends_signed_odengi_request() -> None:
             "long_term": 0,
             "result_url": "https://payments.example/api/v1/webhooks/odengi",
             "fields_other": {
+                "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                 "invoice_number": "TIGER-FACTURE-1001",
                 "source": "tiger",
             },
@@ -87,6 +88,7 @@ async def test_create_dynamic_qr_sends_signed_odengi_request() -> None:
             DynamicQRCreate(
                 amount=100,
                 metadata={
+                    "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                     "invoice_number": "TIGER-FACTURE-1001",
                     "source": "tiger",
                 },
@@ -95,13 +97,14 @@ async def test_create_dynamic_qr_sends_signed_odengi_request() -> None:
         )
 
     await http_client.aclose()
-    assert response.id == "TIGER-FACTURE-1001"
+    assert response.id == "550e8400-e29b-41d4-a716-446655440000"
     assert response.payment_token == "https://test4-mwallet.dengi.kg/#abc"
     assert response.metadata == {
+        "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
         "invoice_number": "TIGER-FACTURE-1001",
         "source": "tiger",
-        "order_id": "TIGER-FACTURE-1001",
-        "invoice_id": "172030403548",
+        "order_id": "550e8400-e29b-41d4-a716-446655440000",
+        "provider_invoice_id": "172030403548",
     }
     assert response.invoice_id == "172030403548"
     assert response.link_app == "https://o.kg/l/a?t=wl_unpbill&id=172030403548"

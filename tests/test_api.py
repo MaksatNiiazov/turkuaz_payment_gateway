@@ -256,6 +256,7 @@ def test_dynamic_qr_form_builds_payload_from_fields(tmp_path: Path) -> None:
             headers={"X-Integration-Key": "pos-secret"},
             data={
                 "amount": "100",
+                "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                 "invoice_number": "TIGER-FACTURE-1001",
                 "source": "tiger",
             },
@@ -264,6 +265,7 @@ def test_dynamic_qr_form_builds_payload_from_fields(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert fake_client.last_dynamic_payload.amount == 100
     assert fake_client.last_dynamic_payload.metadata == {
+        "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
         "invoice_number": "TIGER-FACTURE-1001",
         "source": "tiger",
     }
@@ -286,6 +288,7 @@ def test_static_qr_form_builds_payload_from_fields(tmp_path: Path) -> None:
                 "cashier": "130610",
                 "amount": "100",
                 "change_amount": "false",
+                "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                 "invoice_number": "TIGER-FACTURE-1001",
                 "payer_code": "12345678901234",
             },
@@ -295,6 +298,7 @@ def test_static_qr_form_builds_payload_from_fields(tmp_path: Path) -> None:
     assert fake_client.last_static_payload.branch == 236366
     assert fake_client.last_static_payload.cashier == 130610
     assert fake_client.last_static_payload.metadata == {
+        "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
         "invoice_number": "TIGER-FACTURE-1001",
         "source": "tiger",
         "payer_code": "12345678901234",
@@ -331,7 +335,18 @@ def test_local_transactions_list_returns_saved_transactions(tmp_path: Path) -> N
         create = client.post(
             "/api/v1/qr/dynamic",
             headers={"X-Integration-Key": "pos-secret"},
-            json={"amount": 100, "metadata": {"invoice_number": "TIGER-1"}},
+            json={
+                "amount": 100,
+                "metadata": {
+                    "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "invoice_number": "TIGER-1",
+                },
+            },
+        )
+        filtered = client.get(
+            "/api/v1/local/transactions",
+            headers={"X-Admin-Key": "admin-secret"},
+            params={"invoice_id": "550e8400-e29b-41d4-a716-446655440000"},
         )
         listed = client.get(
             "/api/v1/local/transactions",
@@ -339,9 +354,16 @@ def test_local_transactions_list_returns_saved_transactions(tmp_path: Path) -> N
         )
 
     assert create.status_code == 200
+    assert filtered.status_code == 200
     assert listed.status_code == 200
+    assert filtered.json()[0]["id"] == "MKSA-1"
+    assert filtered.json()[0]["external_invoice_id"] == "550e8400-e29b-41d4-a716-446655440000"
     assert listed.json()[0]["id"] == "MKSA-1"
-    assert listed.json()[0]["metadata"] == {"invoice_number": "TIGER-1"}
+    assert listed.json()[0]["external_invoice_id"] == "550e8400-e29b-41d4-a716-446655440000"
+    assert listed.json()[0]["metadata"] == {
+        "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
+        "invoice_number": "TIGER-1",
+    }
 
 
 def test_local_admin_endpoints_use_admin_key_not_integration_key(tmp_path: Path) -> None:

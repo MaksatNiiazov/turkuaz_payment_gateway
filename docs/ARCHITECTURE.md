@@ -14,9 +14,9 @@ FastAPI public API
         v
 PaymentGateway
         |
-        +-- MKassaProvider -> MKassa API
-        +-- ODengiProvider -> O!Dengi API
-        +-- FutureBankProvider -> another bank API
+        +-- MKassaProvider -> AsyncMKassaClient -> MKassa API
+        +-- ODengiProvider -> AsyncODengiClient -> O!Dengi API
+        +-- FutureBankProvider -> FutureBankClient -> another bank API
         |
         v
 PaymentStore -> SQLite for the first production phase, demos, local runs, and tests
@@ -49,6 +49,11 @@ DATABASE_URL=sqlite:///./data/payment_gateway.db \
 
 Bank-specific logic must stay behind `PaymentProvider`.
 
+`PaymentProvider` is an abstract base class and is the only shared provider
+contract used by the gateway/service layers. Provider clients such as
+`AsyncMKassaClient` and `AsyncODengiClient` stay concrete because they are
+low-level HTTP adapters for different bank APIs.
+
 Current providers:
 
 ```text
@@ -71,12 +76,12 @@ This keeps the design close to SOLID:
 
 - Single responsibility: routes, use cases, provider clients, and persistence are separate.
 - Open/closed: a new bank is added as a new provider without rewriting existing MKassa code.
-- Dependency inversion: business flows depend on the provider protocol, not one concrete bank API.
+- Dependency inversion: business flows depend on the provider abstract base class, not one concrete bank API.
 
 When adding another bank:
 
 1. Add a bank client that knows only that bank's HTTP API.
-2. Add a provider implementing the `PaymentProvider` protocol.
+2. Add a provider inheriting from `PaymentProvider`.
 3. Register it in `PaymentGateway`.
 4. Keep public API payloads stable unless a new business capability is required.
 
@@ -117,6 +122,11 @@ The service persists:
 
 These tables are intentionally provider-aware, so future banks can reuse the
 same operational and frontend screens.
+
+For 1C invoice payments, clients should send the stable 1C document ID in
+`metadata.invoice_id`. The store extracts it into `transactions.external_invoice_id`
+so multiple provider transactions can be grouped by the same invoice without
+depending on a human-readable invoice number or bank-specific IDs.
 
 ## Frontend Readiness
 

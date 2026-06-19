@@ -103,10 +103,12 @@ class MetadataRequestMixin(APIModel):
         default=None,
         description=(
             "Additional MKassa metadata. Maximum 5 keys, each value up to 150 chars. "
-            "For Tiger facture code use invoice_number."
+            "For stable 1C invoice binding use invoice_id. "
+            "For human-readable facture code use invoice_number."
         ),
         examples=[
             {
+                "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                 "invoice_number": "TIGER-FACTURE-1001",
                 "source": "tiger",
             }
@@ -128,6 +130,7 @@ class DynamicQRCreate(MetadataRequestMixin):
                     "value": {
                         "amount": 100,
                         "metadata": {
+                            "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                             "invoice_number": "TIGER-FACTURE-1001",
                             "source": "tiger",
                         },
@@ -141,6 +144,7 @@ class DynamicQRCreate(MetadataRequestMixin):
                         "cashier": 130610,
                         "is_long_living": True,
                         "metadata": {
+                            "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                             "invoice_number": "TIGER-FACTURE-1001",
                             "source": "tiger",
                         },
@@ -200,6 +204,7 @@ class StaticQRCreate(MetadataRequestMixin):
                         "amount": 100,
                         "change_amount": False,
                         "metadata": {
+                            "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                             "invoice_number": "TIGER-FACTURE-1001",
                             "source": "tiger",
                         },
@@ -215,6 +220,7 @@ class StaticQRCreate(MetadataRequestMixin):
                         "metadata": {
                             "payer_code": "12345678901234",
                             "payer_full_name": "ОсОО Тест",
+                            "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                             "invoice_number": "TIGER-FACTURE-1001",
                         },
                     },
@@ -381,6 +387,7 @@ class WebhookPayload(APIModel):
                     "created_at": "2026-05-25T09:28:12.639897+06:00",
                     "paid_at": "2026-05-25T09:28:30+06:00",
                     "metadata": {
+                        "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
                         "invoice_number": "TIGER-FACTURE-1001",
                         "source": "tiger",
                     },

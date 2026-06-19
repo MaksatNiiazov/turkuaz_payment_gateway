@@ -43,6 +43,7 @@ transactions = Table(
     Column("amount", Integer),
     Column("branch", String(128)),
     Column("cashier", String(128)),
+    Column("external_invoice_id", String(150)),
     Column("created_at", String(64)),
     Column("paid_at", String(64)),
     Column("payment_token", Text),
@@ -79,6 +80,7 @@ api_access_events = Table(
 )
 
 Index("idx_transactions_provider_status", transactions.c.provider, transactions.c.status)
+Index("idx_transactions_external_invoice_id", transactions.c.external_invoice_id)
 Index("idx_transactions_updated_at", transactions.c.updated_at)
 Index("idx_webhook_events_transaction_id", webhook_events.c.transaction_id)
 Index("idx_webhook_events_received_at", webhook_events.c.received_at)
@@ -124,6 +126,7 @@ class PaymentStore:
             amount=data.get("amount") if "amount" in data else data.get("transaction_sum"),
             branch=data.get("branch") if "branch" in data else data.get("branch_id"),
             cashier=data.get("cashier"),
+            external_invoice_id=self._extract_external_invoice_id(data),
             created_at=data.get("created_at") or data.get("transaction_date"),
             paid_at=data.get("paid_at"),
             payment_token=data.get("payment_token"),
@@ -142,6 +145,7 @@ class PaymentStore:
         amount: int | str | None = None,
         branch: int | str | None = None,
         cashier: int | str | None = None,
+        external_invoice_id: str | None = None,
         created_at: str | None = None,
         paid_at: str | None = None,
         payment_token: str | None = None,
@@ -159,6 +163,7 @@ class PaymentStore:
             "amount": self._parse_int(amount),
             "branch": None if branch is None else str(branch),
             "cashier": None if cashier is None else str(cashier),
+            "external_invoice_id": self._clean_string(external_invoice_id),
             "created_at": self._serialize_value(created_at),
             "paid_at": self._serialize_value(paid_at),
             "payment_token": payment_token,
@@ -268,6 +273,7 @@ class PaymentStore:
         limit: int = 50,
         provider: str | None = None,
         status: str | None = None,
+        external_invoice_id: str | None = None,
     ) -> list[dict[str, Any]]:
         capped_limit = min(max(limit, 1), 500)
         query = select(transactions).order_by(desc(transactions.c.updated_at)).limit(capped_limit)
@@ -275,6 +281,8 @@ class PaymentStore:
             query = query.where(transactions.c.provider == provider)
         if status:
             query = query.where(transactions.c.status == status)
+        if external_invoice_id:
+            query = query.where(transactions.c.external_invoice_id == external_invoice_id)
 
         with self.engine.begin() as connection:
             rows = connection.execute(query).mappings()
@@ -352,6 +360,14 @@ class PaymentStore:
                 connection.exec_driver_sql(
                     "ALTER TABLE transactions ADD COLUMN provider TEXT NOT NULL DEFAULT 'mkassa'"
                 )
+            if transaction_columns and "external_invoice_id" not in transaction_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE transactions ADD COLUMN external_invoice_id TEXT"
+                )
+                connection.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS idx_transactions_external_invoice_id "
+                    "ON transactions (external_invoice_id)"
+                )
 
             webhook_columns = {
                 row[1]
@@ -417,6 +433,24 @@ class PaymentStore:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _extract_external_invoice_id(data: dict[str, Any]) -> str | None:
+        metadata_value = data.get("metadata")
+        if not isinstance(metadata_value, dict):
+            return None
+        for key in ("invoice_id", "external_invoice_id", "onec_invoice_id", "invoice_uid"):
+            value = PaymentStore._clean_string(metadata_value.get(key))
+            if value:
+                return value
+        return None
+
+    @staticmethod
+    def _clean_string(value: Any) -> str | None:
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned or None
 
     @staticmethod
     def _serialize_value(value: Any) -> str | None:
