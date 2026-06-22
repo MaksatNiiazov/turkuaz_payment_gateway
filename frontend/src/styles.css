@@ -77,3 +77,65 @@
   flex-wrap: wrap;
   gap: 10px;
 }
+
+.settings-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.settings-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-header h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-table-wrap {
+  overflow-x: auto;
+}
+
+.settings-table input,
+.settings-table select {
+  width: 100%;
+  min-width: 120px;
+}
+
+.settings-table td:first-child,
+.settings-table th:first-child,
+.settings-table td:last-child,
+.settings-table th:last-child {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.settings-note {
+  border: 1px solid var(--border, #d7dee8);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--surface-muted, #f4f7f9);
+  color: var(--text-muted, #64748b);
+}
+
+.icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border, #d7dee8);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--surface, #ffffff);
+  color: var(--text, #0f172a);
+  cursor: pointer;
+}

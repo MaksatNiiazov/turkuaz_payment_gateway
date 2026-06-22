@@ -57,4 +57,12 @@ export type DynamicQrResponse = {
   site_pay?: string | null;
 };
 
-export type ViewMode = "transactions" | "webhooks" | "access" | "qr-demo";
+export type PrintQrCodeConfigItem = {
+  code: string;
+  label: string;
+  provider: PaymentProvider;
+  enabled: boolean;
+  sort_order: number;
+};
+
+export type ViewMode = "transactions" | "webhooks" | "access" | "qr-demo" | "print-settings";

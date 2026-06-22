@@ -2,6 +2,7 @@ import type {
   AccessEvent,
   DynamicQrResponse,
   PaymentProvider,
+  PrintQrCodeConfigItem,
   TransactionRow,
   WebhookEvent,
 } from "./types";
@@ -114,6 +115,20 @@ export function createDemoDynamicQr(payload: {
       is_long_living: payload.is_long_living,
       metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     }),
+  });
+}
+
+export function fetchPrintQrCodes(): Promise<PrintQrCodeConfigItem[]> {
+  return requestJson<PrintQrCodeConfigItem[]>("/api/v1/admin/print-qr-codes");
+}
+
+export function savePrintQrCodes(items: PrintQrCodeConfigItem[]): Promise<PrintQrCodeConfigItem[]> {
+  return requestJson<PrintQrCodeConfigItem[]>("/api/v1/admin/print-qr-codes", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ items }),
   });
 }
 

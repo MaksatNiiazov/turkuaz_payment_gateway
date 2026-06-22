@@ -74,8 +74,10 @@ class FakeProvider(PaymentProvider):
         self.transaction_id = transaction_id
         self.last_dynamic_payload = None
         self.canceled_transaction_id = None
+        self.dynamic_create_count = 0
 
     async def create_dynamic_qr(self, payload):
+        self.dynamic_create_count += 1
         self.last_dynamic_payload = payload
         return DynamicQRResponse(
             id=self.transaction_id,
@@ -363,6 +365,132 @@ def test_local_transactions_list_returns_saved_transactions(tmp_path: Path) -> N
     assert listed.json()[0]["metadata"] == {
         "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
         "invoice_number": "TIGER-1",
+    }
+
+
+def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> None:
+    app = create_app(
+        settings=make_multi_provider_settings(tmp_path / "app.db"),
+        providers=[
+            FakeProvider("mkassa", "MBANK-1"),
+            FakeProvider("odengi", "OBANK-1"),
+        ],
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        defaults = client.get(
+            "/api/v1/admin/print-qr-codes",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        saved = client.put(
+            "/api/v1/admin/print-qr-codes",
+            headers={"X-Admin-Key": "admin-secret"},
+            json={
+                "items": [
+                    {
+                        "code": "obank",
+                        "label": "О!Банк",
+                        "provider": "odengi",
+                        "enabled": True,
+                        "sort_order": 10,
+                    },
+                    {
+                        "code": "mbank",
+                        "label": "MBank QR",
+                        "provider": "mkassa",
+                        "enabled": False,
+                        "sort_order": 20,
+                    },
+                ]
+            },
+        )
+
+    assert defaults.status_code == 200
+    assert [item["code"] for item in defaults.json()] == ["mbank", "obank"]
+    assert saved.status_code == 200
+    assert saved.json() == [
+        {
+            "code": "obank",
+            "label": "О!Банк",
+            "provider": "odengi",
+            "enabled": True,
+            "sort_order": 10,
+        },
+        {
+            "code": "mbank",
+            "label": "MBank QR",
+            "provider": "mkassa",
+            "enabled": False,
+            "sort_order": 20,
+        },
+    ]
+
+
+def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: Path) -> None:
+    mkassa = FakeProvider("mkassa", "MBANK-1")
+    odengi = FakeProvider("odengi", "OBANK-1")
+    app = create_app(
+        settings=make_multi_provider_settings(tmp_path / "app.db"),
+        providers=[mkassa, odengi],
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    payload = {
+        "amount": 1500000,
+        "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
+        "invoice_number": "TIGER-1001",
+    }
+    with TestClient(app) as client:
+        configured = client.put(
+            "/api/v1/admin/print-qr-codes",
+            headers={"X-Admin-Key": "admin-secret"},
+            json={
+                "items": [
+                    {
+                        "code": "obank",
+                        "label": "О!Банк",
+                        "provider": "odengi",
+                        "enabled": True,
+                        "sort_order": 10,
+                    },
+                    {
+                        "code": "mbank",
+                        "label": "MBank",
+                        "provider": "mkassa",
+                        "enabled": True,
+                        "sort_order": 20,
+                    },
+                ]
+            },
+        )
+        first = client.post(
+            "/api/v1/invoice/qr-codes",
+            headers={"X-Integration-Key": "mkassa-secret"},
+            json=payload,
+        )
+        second = client.post(
+            "/api/v1/invoice/qr-codes",
+            headers={"X-Integration-Key": "mkassa-secret"},
+            json=payload,
+        )
+
+    assert configured.status_code == 200
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert [item["code"] for item in first.json()["items"]] == ["obank", "mbank"]
+    assert [item["label"] for item in first.json()["items"]] == ["О!Банк", "MBank"]
+    assert [item["transaction_id"] for item in first.json()["items"]] == ["OBANK-1", "MBANK-1"]
+    assert [item["reused"] for item in first.json()["items"]] == [False, False]
+    assert [item["reused"] for item in second.json()["items"]] == [True, True]
+    assert odengi.dynamic_create_count == 1
+    assert mkassa.dynamic_create_count == 1
+    assert odengi.last_dynamic_payload.metadata == {
+        "source": "1c",
+        "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
+        "invoice_number": "TIGER-1001",
+        "print_qr_code": "obank",
+        "print_qr_label": "О!Банк",
     }
 
 

@@ -12,17 +12,20 @@ import {
   clearToken,
   createDemoDynamicQr,
   fetchAccessEvents,
+  fetchPrintQrCodes,
   fetchTransactions,
   fetchWebhooks,
   getToken,
   loginViaIdentity,
   qrImageUrl,
   refreshTransaction,
+  savePrintQrCodes,
 } from "./api";
 import type {
   AccessEvent,
   DynamicQrResponse,
   PaymentProvider,
+  PrintQrCodeConfigItem,
   TransactionRow,
   ViewMode,
   WebhookEvent,
@@ -116,6 +119,11 @@ function App() {
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [qrResult, setQrResult] = useState<DynamicQrResponse | null>(null);
   const [qrState, setQrState] = useState<LoadState>({ loading: false, error: null });
+  const [printQrCodes, setPrintQrCodes] = useState<PrintQrCodeConfigItem[]>([]);
+  const [printSettingsState, setPrintSettingsState] = useState<LoadState>({
+    loading: false,
+    error: null,
+  });
   const [registeredServices, setRegisteredServices] = useState<ServiceRegistryItem[]>([]);
   const [currentUser, setCurrentUser] = useState<CurrentIdentityUser | null>(null);
 
@@ -164,10 +172,28 @@ function App() {
     }
   }, [limit, providerFilter, statusFilter]);
 
+  const loadPrintSettings = useCallback(async () => {
+    setPrintSettingsState({ loading: true, error: null });
+    try {
+      const rows = await fetchPrintQrCodes();
+      setPrintQrCodes(rows);
+      setPrintSettingsState({ loading: false, error: null });
+    } catch (error) {
+      setPrintSettingsState({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, []);
+
   useEffect(() => {
     if (!isAuthenticated || isLoginPath) return;
-    if (view !== "qr-demo") void loadData();
-  }, [isAuthenticated, isLoginPath, loadData, view]);
+    if (view === "print-settings") {
+      void loadPrintSettings();
+    } else if (view !== "qr-demo") {
+      void loadData();
+    }
+  }, [isAuthenticated, isLoginPath, loadData, loadPrintSettings, view]);
 
   useEffect(() => {
     let cancelled = false;
@@ -261,6 +287,20 @@ function App() {
     }
   }
 
+  async function handleSavePrintQrCodes(items: PrintQrCodeConfigItem[]) {
+    setPrintSettingsState({ loading: true, error: null });
+    try {
+      const saved = await savePrintQrCodes(items);
+      setPrintQrCodes(saved);
+      setPrintSettingsState({ loading: false, error: null });
+    } catch (error) {
+      setPrintSettingsState({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   const navItems = [
     {
       key: "transactions",
@@ -290,6 +330,13 @@ function App() {
       active: view === "qr-demo",
       onClick: () => setView("qr-demo"),
     },
+    {
+      key: "print-settings",
+      label: "QR для 1С",
+      icon: "database" as const,
+      active: view === "print-settings",
+      onClick: () => setView("print-settings"),
+    },
   ];
   const pageTitle =
     view === "transactions"
@@ -298,9 +345,13 @@ function App() {
         ? "Webhook события"
         : view === "access"
           ? "Доступы"
-          : "QR Demo";
+          : view === "print-settings"
+            ? "QR для 1С"
+            : "QR Demo";
   const pageDescription =
-    view === "qr-demo"
+    view === "print-settings"
+      ? "Порядок, подписи и включенные QR-коды для печатной формы 1С."
+      : view === "qr-demo"
       ? "Создание тестового динамического QR через backend API."
       : "Операционная панель для просмотра платежей, callback'ов и обращений интеграций.";
   const shellClaims = currentUser ?? readAccessClaims(TOKEN_STORAGE_KEYS);
@@ -339,15 +390,28 @@ function App() {
       pageDescription={pageDescription}
       breadcrumbs={[{ label: "Payments" }, { label: pageTitle }]}
       headerActions={[
-        { key: "refresh", label: "Обновить", icon: "refresh", onClick: () => void loadData() },
+        {
+          key: "refresh",
+          label: "Обновить",
+          icon: "refresh",
+          onClick: () =>
+            view === "print-settings" ? void loadPrintSettings() : void loadData(),
+        },
       ]}
       environment="local"
       version="v0.1.0"
-      apiStatus={state.error || qrState.error ? "degraded" : "online"}
+      apiStatus={state.error || qrState.error || printSettingsState.error ? "degraded" : "online"}
       footerLinks={[{ href: API_DOCS_URL, label: "Swagger" }]}
       user={shellUser}
     >
-        {view === "qr-demo" ? (
+        {view === "print-settings" ? (
+          <PrintSettingsPanel
+            items={printQrCodes}
+            state={printSettingsState}
+            onReload={() => void loadPrintSettings()}
+            onSave={(items) => void handleSavePrintQrCodes(items)}
+          />
+        ) : view === "qr-demo" ? (
           <QrDemoPanel
             result={qrResult}
             state={qrState}
@@ -597,6 +661,165 @@ function TransactionDetails({
         </>
       )}
     </aside>
+  );
+}
+
+function PrintSettingsPanel({
+  items,
+  state,
+  onReload,
+  onSave,
+}: {
+  items: PrintQrCodeConfigItem[];
+  state: LoadState;
+  onReload: () => void;
+  onSave: (items: PrintQrCodeConfigItem[]) => void;
+}) {
+  const [draft, setDraft] = useState<PrintQrCodeConfigItem[]>(items);
+
+  useEffect(() => {
+    setDraft(items);
+  }, [items]);
+
+  function updateItem(index: number, patch: Partial<PrintQrCodeConfigItem>) {
+    setDraft((current) =>
+      current.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)),
+    );
+  }
+
+  function addItem() {
+    const nextIndex = draft.length + 1;
+    setDraft((current) => [
+      ...current,
+      {
+        code: `qr_${nextIndex}`,
+        label: `QR ${nextIndex}`,
+        provider: "mkassa",
+        enabled: true,
+        sort_order: nextIndex * 10,
+      },
+    ]);
+  }
+
+  function removeItem(index: number) {
+    setDraft((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  function normalizedDraft(): PrintQrCodeConfigItem[] {
+    return draft
+      .map((item, index) => ({
+        ...item,
+        code: item.code.trim().toLowerCase(),
+        label: item.label.trim(),
+        sort_order: Number(item.sort_order) || (index + 1) * 10,
+      }))
+      .sort((left, right) => left.sort_order - right.sort_order || left.code.localeCompare(right.code));
+  }
+
+  const hasDuplicateCodes = new Set(draft.map((item) => item.code.trim().toLowerCase())).size !== draft.length;
+  const hasEmptyFields = draft.some((item) => !item.code.trim() || !item.label.trim());
+  const canSave = draft.length > 0 && !hasDuplicateCodes && !hasEmptyFields && !state.loading;
+
+  return (
+    <section className="settings-panel">
+      <div className="settings-header">
+        <div>
+          <h2>Печатные QR-коды для 1С</h2>
+          <p className="hint-copy">
+            1С будет брать этот список через backend и печатать включенные QR в заданном порядке.
+          </p>
+        </div>
+        <div className="settings-actions">
+          <button className="secondary-action" disabled={state.loading} type="button" onClick={onReload}>
+            <Icon name="refresh" size={15} />
+            Обновить
+          </button>
+          <button className="refresh" disabled={!canSave} type="button" onClick={() => onSave(normalizedDraft())}>
+            <Icon name="shield" size={15} />
+            {state.loading ? "Сохранение..." : "Сохранить"}
+          </button>
+        </div>
+      </div>
+
+      {state.error && <p className="error-copy">{state.error}</p>}
+      {hasDuplicateCodes && <p className="error-copy">Коды должны быть уникальными.</p>}
+      {hasEmptyFields && <p className="error-copy">Заполните код и подпись для каждой строки.</p>}
+
+      <div className="settings-table-wrap">
+        <table className="settings-table">
+          <thead>
+            <tr>
+              <th>Печатать</th>
+              <th>Порядок</th>
+              <th>Код</th>
+              <th>Подпись</th>
+              <th>Provider</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {draft.map((item, index) => (
+              <tr key={`${item.code}-${index}`}>
+                <td>
+                  <input
+                    checked={item.enabled}
+                    type="checkbox"
+                    onChange={(event) => updateItem(index, { enabled: event.target.checked })}
+                  />
+                </td>
+                <td>
+                  <input
+                    min={0}
+                    type="number"
+                    value={item.sort_order}
+                    onChange={(event) => updateItem(index, { sort_order: Number(event.target.value) || 0 })}
+                  />
+                </td>
+                <td>
+                  <input
+                    value={item.code}
+                    onChange={(event) => updateItem(index, { code: event.target.value })}
+                  />
+                </td>
+                <td>
+                  <input
+                    value={item.label}
+                    onChange={(event) => updateItem(index, { label: event.target.value })}
+                  />
+                </td>
+                <td>
+                  <select
+                    value={item.provider}
+                    onChange={(event) =>
+                      updateItem(index, { provider: event.target.value as PaymentProvider })
+                    }
+                  >
+                    <option value="mkassa">MKassa / MBank</option>
+                    <option value="odengi">O!Dengi / O!Bank</option>
+                  </select>
+                </td>
+                <td>
+                  <button className="icon-action" type="button" onClick={() => removeItem(index)}>
+                    <Icon name="ban" size={15} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <button className="secondary-action" type="button" onClick={addItem}>
+        <Icon name="plus" size={15} />
+        Добавить QR
+      </button>
+
+      <div className="settings-note">
+        <strong>Для 1С:</strong> после этой правки расширение должно вызывать один endpoint{" "}
+        <span className="mono">POST /api/v1/invoice/qr-codes</span>, а не два раза{" "}
+        <span className="mono">/api/v1/qr/dynamic</span> с разными ключами.
+      </div>
+    </section>
   );
 }
 

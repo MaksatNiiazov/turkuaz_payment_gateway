@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 MAX_METADATA_KEYS = 5
 MAX_METADATA_VALUE_LENGTH = 150
+SUPPORTED_PRINT_QR_PROVIDERS = {"mkassa", "odengi"}
 
 
 class TransactionStatus(StrEnum):
@@ -96,6 +97,21 @@ def parse_optional_string(value: Any) -> str | None:
     if value is None:
         return None
     return parse_string(value)
+
+
+def parse_code(value: Any) -> str:
+    parsed = parse_string(value).lower()
+    if not all(char.isalnum() or char in {"_", "-"} for char in parsed):
+        raise ValueError("code may contain only letters, numbers, underscore, or dash")
+    return parsed
+
+
+def parse_print_provider(value: Any) -> str:
+    parsed = parse_string(value).lower()
+    if parsed not in SUPPORTED_PRINT_QR_PROVIDERS:
+        supported = ", ".join(sorted(SUPPORTED_PRINT_QR_PROVIDERS))
+        raise ValueError(f"provider must be one of: {supported}")
+    return parsed
 
 
 class MetadataRequestMixin(APIModel):
@@ -312,6 +328,102 @@ class StaticQRResponse(APIModel):
     @classmethod
     def validate_response_amount(cls, value: Any) -> int | None:
         return parse_amount(value)
+
+
+class PrintQRCodeConfigItem(APIModel):
+    code: str = Field(
+        min_length=1,
+        max_length=64,
+        description="Stable code used by 1C layouts, e.g. mbank or obank.",
+    )
+    label: str = Field(
+        min_length=1,
+        max_length=150,
+        description="Human-readable label printed near the QR image.",
+    )
+    provider: str = Field(description="Payment provider used to create this QR.")
+    enabled: bool = Field(default=True, description="Whether 1C should print this QR.")
+    sort_order: int = Field(default=100, ge=0, le=10000, description="Print order.")
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def validate_code(cls, value: Any) -> str:
+        return parse_code(value)
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def validate_label(cls, value: Any) -> str:
+        return parse_string(value)
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def validate_provider(cls, value: Any) -> str:
+        return parse_print_provider(value)
+
+
+class PrintQRCodeConfigUpdate(APIModel):
+    items: list[PrintQRCodeConfigItem] = Field(min_length=1, max_length=10)
+
+    @field_validator("items")
+    @classmethod
+    def validate_unique_codes(
+        cls,
+        value: list[PrintQRCodeConfigItem],
+    ) -> list[PrintQRCodeConfigItem]:
+        codes = [item.code for item in value]
+        if len(codes) != len(set(codes)):
+            raise ValueError("print QR codes must be unique")
+        return value
+
+
+class InvoiceQRCodeCreate(APIModel):
+    amount: int = Field(gt=0, description="Invoice amount in tyiyn. Example: 100 = 1 som.")
+    invoice_id: str = Field(
+        min_length=1,
+        max_length=150,
+        description="Stable 1C invoice/document ID.",
+    )
+    invoice_number: str | None = Field(
+        default=None,
+        max_length=150,
+        description="Human-readable invoice or facture number.",
+    )
+    source: str = Field(default="1c", max_length=150, description="Source label.")
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def validate_amount(cls, value: Any) -> int:
+        amount = parse_amount(value)
+        if amount is None:
+            raise ValueError("amount is required")
+        return amount
+
+    @field_validator("invoice_id", "source", mode="before")
+    @classmethod
+    def validate_required_string(cls, value: Any) -> str:
+        return parse_string(value)
+
+    @field_validator("invoice_number", mode="before")
+    @classmethod
+    def validate_optional_invoice_number(cls, value: Any) -> str | None:
+        return parse_optional_string(value)
+
+
+class InvoiceQRCodeItem(APIModel):
+    code: str
+    label: str
+    provider: str
+    transaction_id: str
+    status: str | None = None
+    amount: int | None = None
+    image_path: str
+    reused: bool
+
+
+class InvoiceQRCodeBundleResponse(APIModel):
+    invoice_id: str
+    invoice_number: str | None = None
+    items: list[InvoiceQRCodeItem]
 
 
 class TransactionListResponse(APIModel):

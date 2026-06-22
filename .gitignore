@@ -11,6 +11,7 @@ dist/
 build/
 frontend/node_modules/
 frontend/dist/
+PayQR_1C_InvoiceQRCode_Module.bsl
 data/*.db
 data/*.db-*
 data/*.sqlite

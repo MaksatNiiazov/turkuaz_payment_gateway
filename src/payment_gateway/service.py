@@ -18,6 +18,9 @@ from payment_gateway.models import (
 from payment_gateway.store import PaymentStore, WebhookStoreResult
 
 
+REUSABLE_INVOICE_QR_STATUSES = {"inited", "waiting", "qr_scanned", "paid"}
+
+
 class PaymentService:
     def __init__(self, *, gateway: PaymentGateway, store: PaymentStore) -> None:
         self.gateway = gateway
@@ -33,6 +36,29 @@ class PaymentService:
         response = await provider.create_dynamic_qr(payload)
         self.store.upsert_transaction_payload(response, provider=provider.name)
         return response
+
+    async def create_or_reuse_invoice_qr(
+        self,
+        payload: DynamicQRCreate,
+        *,
+        provider_name: str,
+        invoice_id: str,
+        print_qr_code: str,
+    ) -> tuple[dict, bool]:
+        provider = self.gateway.provider(provider_name)
+        existing = self.store.find_invoice_transaction(
+            external_invoice_id=invoice_id,
+            provider=provider.name,
+            print_qr_code=print_qr_code,
+            statuses=REUSABLE_INVOICE_QR_STATUSES,
+        )
+        if existing is not None:
+            return existing, True
+
+        response = await provider.create_dynamic_qr(payload)
+        self.store.upsert_transaction_payload(response, provider=provider.name)
+        saved = self.store.get_transaction(str(response.id))
+        return saved or response.model_dump(mode="json", exclude_none=True), False
 
     async def create_static_qr(
         self,

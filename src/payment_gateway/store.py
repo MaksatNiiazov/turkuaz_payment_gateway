@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel
 from sqlalchemy import (
+    Boolean,
     Column,
     Engine,
     Index,
@@ -29,6 +30,24 @@ from sqlalchemy.exc import IntegrityError
 class WebhookStoreResult:
     transaction_id: str
     duplicate: bool
+
+
+DEFAULT_PRINT_QR_CODES = [
+    {
+        "code": "mbank",
+        "label": "MBank",
+        "provider": "mkassa",
+        "enabled": True,
+        "sort_order": 10,
+    },
+    {
+        "code": "obank",
+        "label": "О!Банк",
+        "provider": "odengi",
+        "enabled": True,
+        "sort_order": 20,
+    },
+]
 
 
 metadata = MetaData()
@@ -79,6 +98,18 @@ api_access_events = Table(
     Column("created_at", String(64), nullable=False),
 )
 
+print_qr_codes = Table(
+    "print_qr_codes",
+    metadata,
+    Column("code", String(64), primary_key=True),
+    Column("label", String(150), nullable=False),
+    Column("provider", String(32), nullable=False),
+    Column("enabled", Boolean, nullable=False, default=True),
+    Column("sort_order", Integer, nullable=False, default=100),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+)
+
 Index("idx_transactions_provider_status", transactions.c.provider, transactions.c.status)
 Index("idx_transactions_external_invoice_id", transactions.c.external_invoice_id)
 Index("idx_transactions_updated_at", transactions.c.updated_at)
@@ -86,6 +117,7 @@ Index("idx_webhook_events_transaction_id", webhook_events.c.transaction_id)
 Index("idx_webhook_events_received_at", webhook_events.c.received_at)
 Index("idx_api_access_events_integration_name", api_access_events.c.integration_name)
 Index("idx_api_access_events_created_at", api_access_events.c.created_at)
+Index("idx_print_qr_codes_enabled_sort", print_qr_codes.c.enabled, print_qr_codes.c.sort_order)
 
 
 class PaymentStore:
@@ -102,6 +134,7 @@ class PaymentStore:
             self._migrate_legacy_sqlite()
 
         metadata.create_all(self.engine)
+        self.ensure_default_print_qr_codes()
 
     def close(self) -> None:
         self.engine.dispose()
@@ -288,6 +321,78 @@ class PaymentStore:
             rows = connection.execute(query).mappings()
             return [self._transaction_row_to_dict(row) for row in rows]
 
+    def find_invoice_transaction(
+        self,
+        *,
+        external_invoice_id: str,
+        provider: str,
+        print_qr_code: str,
+        statuses: set[str],
+    ) -> dict[str, Any] | None:
+        query = (
+            select(transactions)
+            .where(transactions.c.external_invoice_id == external_invoice_id)
+            .where(transactions.c.provider == provider)
+            .order_by(desc(transactions.c.updated_at))
+            .limit(100)
+        )
+        with self.engine.begin() as connection:
+            rows = connection.execute(query).mappings()
+            for row in rows:
+                item = self._transaction_row_to_dict(row)
+                if item.get("status") not in statuses:
+                    continue
+                item_metadata = item.get("metadata")
+                if not isinstance(item_metadata, dict):
+                    continue
+                if item_metadata.get("print_qr_code") == print_qr_code:
+                    return item
+        return None
+
+    def list_print_qr_codes(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+        query = select(print_qr_codes).order_by(print_qr_codes.c.sort_order, print_qr_codes.c.code)
+        if enabled_only:
+            query = query.where(print_qr_codes.c.enabled.is_(True))
+        with self.engine.begin() as connection:
+            rows = connection.execute(query).mappings()
+            return [self._print_qr_code_row_to_dict(row) for row in rows]
+
+    def replace_print_qr_codes(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        now = self._now()
+        with self.engine.begin() as connection:
+            connection.execute(print_qr_codes.delete())
+            for item in items:
+                connection.execute(
+                    print_qr_codes.insert().values(
+                        code=item["code"],
+                        label=item["label"],
+                        provider=item["provider"],
+                        enabled=bool(item["enabled"]),
+                        sort_order=int(item["sort_order"]),
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+        return self.list_print_qr_codes()
+
+    def ensure_default_print_qr_codes(self) -> None:
+        with self.engine.begin() as connection:
+            existing = connection.execute(select(print_qr_codes.c.code).limit(1)).first()
+            if existing is not None:
+                return
+            now = self._now()
+            connection.execute(
+                print_qr_codes.insert(),
+                [
+                    {
+                        **item,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                    for item in DEFAULT_PRINT_QR_CODES
+                ],
+            )
+
     def list_webhook_events(self, *, limit: int = 50) -> list[dict[str, Any]]:
         capped_limit = min(max(limit, 1), 500)
         with self.engine.begin() as connection:
@@ -389,6 +494,16 @@ class PaymentStore:
                     "ALTER TABLE api_access_events RENAME COLUMN client_id TO integration_name"
                 )
 
+            print_qr_columns = {
+                row[1]
+                for row in connection.exec_driver_sql("PRAGMA table_info(print_qr_codes)").fetchall()
+            }
+            if print_qr_columns:
+                connection.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS idx_print_qr_codes_enabled_sort "
+                    "ON print_qr_codes (enabled, sort_order)"
+                )
+
     @staticmethod
     def _create_engine(database_url: str) -> Engine:
         connect_args: dict[str, Any] = {}
@@ -413,6 +528,14 @@ class PaymentStore:
     def _webhook_row_to_dict(row: Any) -> dict[str, Any]:
         data = dict(row)
         data["payload"] = PaymentStore._json_loads(data.get("payload")) or {}
+        return data
+
+    @staticmethod
+    def _print_qr_code_row_to_dict(row: Any) -> dict[str, Any]:
+        data = dict(row)
+        data["enabled"] = bool(data.get("enabled"))
+        data.pop("created_at", None)
+        data.pop("updated_at", None)
         return data
 
     @staticmethod

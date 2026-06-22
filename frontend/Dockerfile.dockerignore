@@ -2,3 +2,11 @@
 !PaymentGateway/frontend/**
 !turkuaz-ui/package.json
 !turkuaz-ui/src/**
+PaymentGateway/frontend/node_modules
+PaymentGateway/frontend/node_modules/**
+PaymentGateway/frontend/dist
+PaymentGateway/frontend/dist/**
+PaymentGateway/frontend/.vite
+PaymentGateway/frontend/.vite/**
+PaymentGateway/frontend/tsconfig.tsbuildinfo
+PaymentGateway/frontend/pnpm-lock.yaml

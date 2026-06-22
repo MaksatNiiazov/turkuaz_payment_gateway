@@ -19,7 +19,12 @@ from payment_gateway.models import (
     CancelResponse,
     DynamicQRCreate,
     DynamicQRResponse,
+    InvoiceQRCodeBundleResponse,
+    InvoiceQRCodeCreate,
+    InvoiceQRCodeItem,
     ODengiWebhookPayload,
+    PrintQRCodeConfigItem,
+    PrintQRCodeConfigUpdate,
     StaticQRCreate,
     StaticQRResponse,
     Transaction,
@@ -912,6 +917,83 @@ def create_app(
     async def current_integration(request: Request) -> dict[str, str]:
         return {"integration_name": request.state.integration_name}
 
+    @protected_router.post(
+        "/invoice/qr-codes",
+        response_model=InvoiceQRCodeBundleResponse,
+        tags=["qr"],
+        summary="Create or reuse printable invoice QR codes",
+        description=(
+            "Creates or reuses QR transactions for a 1C invoice using the admin-configured "
+            "print QR list. 1C should call this once and render returned items in order."
+        ),
+    )
+    async def create_invoice_qr_codes(
+        request: Request,
+        payload: InvoiceQRCodeCreate,
+    ) -> InvoiceQRCodeBundleResponse:
+        configured_items = [
+            PrintQRCodeConfigItem.model_validate(item)
+            for item in storage(request).list_print_qr_codes(enabled_only=True)
+        ]
+        if not configured_items:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No enabled print QR codes are configured",
+            )
+
+        response_items: list[InvoiceQRCodeItem] = []
+        for item in configured_items:
+            metadata = build_invoice_qr_metadata(payload, item)
+            transaction, reused = await payments(request).create_or_reuse_invoice_qr(
+                DynamicQRCreate(amount=payload.amount, metadata=metadata),
+                provider_name=item.provider,
+                invoice_id=payload.invoice_id,
+                print_qr_code=item.code,
+            )
+            transaction_id = str(transaction["id"])
+            response_items.append(
+                InvoiceQRCodeItem(
+                    code=item.code,
+                    label=item.label,
+                    provider=item.provider,
+                    transaction_id=transaction_id,
+                    status=transaction.get("status"),
+                    amount=transaction.get("amount"),
+                    image_path=f"/api/v1/qr/render/transaction/{transaction_id}",
+                    reused=reused,
+                )
+            )
+
+        return InvoiceQRCodeBundleResponse(
+            invoice_id=payload.invoice_id,
+            invoice_number=payload.invoice_number,
+            items=response_items,
+        )
+
+    @admin_router.get(
+        "/admin/print-qr-codes",
+        response_model=list[PrintQRCodeConfigItem],
+        tags=["local"],
+        summary="List print QR configuration",
+        description="Admin-only list of QR codes printed by 1C invoice forms.",
+    )
+    async def list_print_qr_codes(request: Request) -> list[dict]:
+        return storage(request).list_print_qr_codes()
+
+    @admin_router.put(
+        "/admin/print-qr-codes",
+        response_model=list[PrintQRCodeConfigItem],
+        tags=["local"],
+        summary="Replace print QR configuration",
+        description="Admin-only replacement for QR labels, order, providers, and enabled flags.",
+    )
+    async def replace_print_qr_codes(
+        request: Request,
+        payload: PrintQRCodeConfigUpdate,
+    ) -> list[dict]:
+        items = [item.model_dump(mode="json") for item in payload.items]
+        return storage(request).replace_print_qr_codes(items)
+
     @admin_router.get(
         "/local/transactions",
         tags=["local"],
@@ -1192,6 +1274,21 @@ def build_form_metadata(
         metadata[metadata_key_1.strip()] = (metadata_value_1 or "").strip()
 
     return metadata or None
+
+
+def build_invoice_qr_metadata(
+    payload: InvoiceQRCodeCreate,
+    item: PrintQRCodeConfigItem,
+) -> dict[str, str]:
+    metadata = {
+        "source": payload.source,
+        "invoice_id": payload.invoice_id,
+        "print_qr_code": item.code,
+        "print_qr_label": item.label,
+    }
+    if payload.invoice_number:
+        metadata["invoice_number"] = payload.invoice_number
+    return metadata
 
 
 def render_qr_png(data: str) -> StreamingResponse:
