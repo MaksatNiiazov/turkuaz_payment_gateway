@@ -38,6 +38,7 @@ DEFAULT_PRINT_QR_CODES = [
         "label": "MBank",
         "provider": "mkassa",
         "enabled": True,
+        "slot": 1,
         "sort_order": 10,
     },
     {
@@ -45,6 +46,7 @@ DEFAULT_PRINT_QR_CODES = [
         "label": "О!Банк",
         "provider": "odengi",
         "enabled": True,
+        "slot": 2,
         "sort_order": 20,
     },
 ]
@@ -105,6 +107,7 @@ print_qr_codes = Table(
     Column("label", String(150), nullable=False),
     Column("provider", String(32), nullable=False),
     Column("enabled", Boolean, nullable=False, default=True),
+    Column("slot", Integer, nullable=False, default=1),
     Column("sort_order", Integer, nullable=False, default=100),
     Column("created_at", String(64), nullable=False),
     Column("updated_at", String(64), nullable=False),
@@ -368,6 +371,7 @@ class PaymentStore:
                         label=item["label"],
                         provider=item["provider"],
                         enabled=bool(item["enabled"]),
+                        slot=int(item["slot"]),
                         sort_order=int(item["sort_order"]),
                         created_at=now,
                         updated_at=now,
@@ -499,6 +503,16 @@ class PaymentStore:
                 for row in connection.exec_driver_sql("PRAGMA table_info(print_qr_codes)").fetchall()
             }
             if print_qr_columns:
+                if "slot" not in print_qr_columns:
+                    connection.exec_driver_sql(
+                        "ALTER TABLE print_qr_codes ADD COLUMN slot INTEGER NOT NULL DEFAULT 1"
+                    )
+                    connection.exec_driver_sql(
+                        "UPDATE print_qr_codes SET slot = 1 WHERE code = 'mbank'"
+                    )
+                    connection.exec_driver_sql(
+                        "UPDATE print_qr_codes SET slot = 2 WHERE code = 'obank'"
+                    )
                 connection.exec_driver_sql(
                     "CREATE INDEX IF NOT EXISTS idx_print_qr_codes_enabled_sort "
                     "ON print_qr_codes (enabled, sort_order)"

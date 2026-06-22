@@ -343,6 +343,7 @@ class PrintQRCodeConfigItem(APIModel):
     )
     provider: str = Field(description="Payment provider used to create this QR.")
     enabled: bool = Field(default=True, description="Whether 1C should print this QR.")
+    slot: int = Field(default=1, ge=1, le=4, description="1C layout slot number, from 1 to 4.")
     sort_order: int = Field(default=100, ge=0, le=10000, description="Print order.")
 
     @field_validator("code", mode="before")
@@ -373,6 +374,9 @@ class PrintQRCodeConfigUpdate(APIModel):
         codes = [item.code for item in value]
         if len(codes) != len(set(codes)):
             raise ValueError("print QR codes must be unique")
+        enabled_slots = [item.slot for item in value if item.enabled]
+        if len(enabled_slots) != len(set(enabled_slots)):
+            raise ValueError("enabled print QR slots must be unique")
         return value
 
 
@@ -413,6 +417,7 @@ class InvoiceQRCodeItem(APIModel):
     code: str
     label: str
     provider: str
+    slot: int
     transaction_id: str
     status: str | None = None
     amount: int | None = None

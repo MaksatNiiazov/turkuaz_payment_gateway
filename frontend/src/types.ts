@@ -62,6 +62,7 @@ export type PrintQrCodeConfigItem = {
   label: string;
   provider: PaymentProvider;
   enabled: boolean;
+  slot: number;
   sort_order: number;
 };
 

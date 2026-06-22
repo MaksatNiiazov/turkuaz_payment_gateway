@@ -689,6 +689,8 @@ function PrintSettingsPanel({
 
   function addItem() {
     const nextIndex = draft.length + 1;
+    const usedSlots = new Set(draft.filter((item) => item.enabled).map((item) => Number(item.slot)));
+    const freeSlot = [1, 2, 3, 4].find((slot) => !usedSlots.has(slot)) ?? 4;
     setDraft((current) => [
       ...current,
       {
@@ -696,6 +698,7 @@ function PrintSettingsPanel({
         label: `QR ${nextIndex}`,
         provider: "mkassa",
         enabled: true,
+        slot: freeSlot,
         sort_order: nextIndex * 10,
       },
     ]);
@@ -711,14 +714,21 @@ function PrintSettingsPanel({
         ...item,
         code: item.code.trim().toLowerCase(),
         label: item.label.trim(),
+        slot: Number(item.slot) || 1,
         sort_order: Number(item.sort_order) || (index + 1) * 10,
       }))
-      .sort((left, right) => left.sort_order - right.sort_order || left.code.localeCompare(right.code));
+      .sort(
+        (left, right) =>
+          left.slot - right.slot || left.sort_order - right.sort_order || left.code.localeCompare(right.code),
+      );
   }
 
   const hasDuplicateCodes = new Set(draft.map((item) => item.code.trim().toLowerCase())).size !== draft.length;
+  const enabledSlots = draft.filter((item) => item.enabled).map((item) => Number(item.slot));
+  const hasDuplicateSlots = new Set(enabledSlots).size !== enabledSlots.length;
   const hasEmptyFields = draft.some((item) => !item.code.trim() || !item.label.trim());
-  const canSave = draft.length > 0 && !hasDuplicateCodes && !hasEmptyFields && !state.loading;
+  const canSave =
+    draft.length > 0 && !hasDuplicateCodes && !hasDuplicateSlots && !hasEmptyFields && !state.loading;
 
   return (
     <section className="settings-panel">
@@ -726,7 +736,7 @@ function PrintSettingsPanel({
         <div>
           <h2>Печатные QR-коды для 1С</h2>
           <p className="hint-copy">
-            1С будет брать этот список через backend и печатать включенные QR в заданном порядке.
+            1С будет брать этот список через backend и печатать включенные QR в выбранных слотах макета.
           </p>
         </div>
         <div className="settings-actions">
@@ -743,6 +753,7 @@ function PrintSettingsPanel({
 
       {state.error && <p className="error-copy">{state.error}</p>}
       {hasDuplicateCodes && <p className="error-copy">Коды должны быть уникальными.</p>}
+      {hasDuplicateSlots && <p className="error-copy">У включенных QR не должен повторяться слот.</p>}
       {hasEmptyFields && <p className="error-copy">Заполните код и подпись для каждой строки.</p>}
 
       <div className="settings-table-wrap">
@@ -750,6 +761,7 @@ function PrintSettingsPanel({
           <thead>
             <tr>
               <th>Печатать</th>
+              <th>Слот</th>
               <th>Порядок</th>
               <th>Код</th>
               <th>Подпись</th>
@@ -766,6 +778,17 @@ function PrintSettingsPanel({
                     type="checkbox"
                     onChange={(event) => updateItem(index, { enabled: event.target.checked })}
                   />
+                </td>
+                <td>
+                  <select
+                    value={item.slot}
+                    onChange={(event) => updateItem(index, { slot: Number(event.target.value) || 1 })}
+                  >
+                    <option value={1}>Слот 1</option>
+                    <option value={2}>Слот 2</option>
+                    <option value={3}>Слот 3</option>
+                    <option value={4}>Слот 4</option>
+                  </select>
                 </td>
                 <td>
                   <input

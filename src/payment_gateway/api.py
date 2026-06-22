@@ -956,6 +956,7 @@ def create_app(
                     code=item.code,
                     label=item.label,
                     provider=item.provider,
+                    slot=item.slot,
                     transaction_id=transaction_id,
                     status=transaction.get("status"),
                     amount=transaction.get("amount"),
@@ -1284,7 +1285,7 @@ def build_invoice_qr_metadata(
         "source": payload.source,
         "invoice_id": payload.invoice_id,
         "print_qr_code": item.code,
-        "print_qr_label": item.label,
+        "print_qr_slot": str(item.slot),
     }
     if payload.invoice_number:
         metadata["invoice_number"] = payload.invoice_number

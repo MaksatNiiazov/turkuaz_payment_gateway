@@ -393,6 +393,7 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
                         "label": "О!Банк",
                         "provider": "odengi",
                         "enabled": True,
+                        "slot": 2,
                         "sort_order": 10,
                     },
                     {
@@ -400,6 +401,7 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
                         "label": "MBank QR",
                         "provider": "mkassa",
                         "enabled": False,
+                        "slot": 1,
                         "sort_order": 20,
                     },
                 ]
@@ -415,6 +417,7 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
             "label": "О!Банк",
             "provider": "odengi",
             "enabled": True,
+            "slot": 2,
             "sort_order": 10,
         },
         {
@@ -422,6 +425,7 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
             "label": "MBank QR",
             "provider": "mkassa",
             "enabled": False,
+            "slot": 1,
             "sort_order": 20,
         },
     ]
@@ -452,6 +456,7 @@ def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: 
                         "label": "О!Банк",
                         "provider": "odengi",
                         "enabled": True,
+                        "slot": 2,
                         "sort_order": 10,
                     },
                     {
@@ -459,6 +464,7 @@ def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: 
                         "label": "MBank",
                         "provider": "mkassa",
                         "enabled": True,
+                        "slot": 1,
                         "sort_order": 20,
                     },
                 ]
@@ -479,6 +485,7 @@ def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: 
     assert first.status_code == 200
     assert second.status_code == 200
     assert [item["code"] for item in first.json()["items"]] == ["obank", "mbank"]
+    assert [item["slot"] for item in first.json()["items"]] == [2, 1]
     assert [item["label"] for item in first.json()["items"]] == ["О!Банк", "MBank"]
     assert [item["transaction_id"] for item in first.json()["items"]] == ["OBANK-1", "MBANK-1"]
     assert [item["reused"] for item in first.json()["items"]] == [False, False]
@@ -490,7 +497,7 @@ def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: 
         "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
         "invoice_number": "TIGER-1001",
         "print_qr_code": "obank",
-        "print_qr_label": "О!Банк",
+        "print_qr_slot": "2",
     }
 
 
