@@ -404,12 +404,28 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
                         "slot": 1,
                         "sort_order": 20,
                     },
+                    {
+                        "code": "qr_3",
+                        "label": "QR 3",
+                        "provider": "mkassa",
+                        "enabled": False,
+                        "slot": 3,
+                        "sort_order": 30,
+                    },
+                    {
+                        "code": "qr_4",
+                        "label": "QR 4",
+                        "provider": "odengi",
+                        "enabled": False,
+                        "slot": 4,
+                        "sort_order": 40,
+                    },
                 ]
             },
         )
 
     assert defaults.status_code == 200
-    assert [item["code"] for item in defaults.json()] == ["mbank", "obank"]
+    assert [item["code"] for item in defaults.json()] == ["mbank", "obank", "qr_3", "qr_4"]
     assert saved.status_code == 200
     assert saved.json() == [
         {
@@ -427,6 +443,22 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
             "enabled": False,
             "slot": 1,
             "sort_order": 20,
+        },
+        {
+            "code": "qr_3",
+            "label": "QR 3",
+            "provider": "mkassa",
+            "enabled": False,
+            "slot": 3,
+            "sort_order": 30,
+        },
+        {
+            "code": "qr_4",
+            "label": "QR 4",
+            "provider": "odengi",
+            "enabled": False,
+            "slot": 4,
+            "sort_order": 40,
         },
     ]
 
@@ -466,6 +498,22 @@ def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: 
                         "enabled": True,
                         "slot": 1,
                         "sort_order": 20,
+                    },
+                    {
+                        "code": "qr_3",
+                        "label": "QR 3",
+                        "provider": "mkassa",
+                        "enabled": False,
+                        "slot": 3,
+                        "sort_order": 30,
+                    },
+                    {
+                        "code": "qr_4",
+                        "label": "QR 4",
+                        "provider": "odengi",
+                        "enabled": False,
+                        "slot": 4,
+                        "sort_order": 40,
                     },
                 ]
             },

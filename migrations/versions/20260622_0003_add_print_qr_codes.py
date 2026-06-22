@@ -69,6 +69,26 @@ def upgrade() -> None:
                 "created_at": now,
                 "updated_at": now,
             },
+            {
+                "code": "qr_3",
+                "label": "QR 3",
+                "provider": "mkassa",
+                "enabled": False,
+                "slot": 3,
+                "sort_order": 30,
+                "created_at": now,
+                "updated_at": now,
+            },
+            {
+                "code": "qr_4",
+                "label": "QR 4",
+                "provider": "odengi",
+                "enabled": False,
+                "slot": 4,
+                "sort_order": 40,
+                "created_at": now,
+                "updated_at": now,
+            },
         ],
     )
 

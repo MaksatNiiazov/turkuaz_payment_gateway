@@ -53,6 +53,22 @@ type CurrentIdentityUser = {
   branch_code?: string | null;
 };
 
+const FIXED_PRINT_QR_CODE_TEMPLATES: PrintQrCodeConfigItem[] = [
+  { code: "mbank", label: "MBank", provider: "mkassa", enabled: true, slot: 1, sort_order: 10 },
+  { code: "obank", label: "О!Банк", provider: "odengi", enabled: true, slot: 2, sort_order: 20 },
+  { code: "qr_3", label: "QR 3", provider: "mkassa", enabled: false, slot: 3, sort_order: 30 },
+  { code: "qr_4", label: "QR 4", provider: "odengi", enabled: false, slot: 4, sort_order: 40 },
+];
+
+function fixedPrintQrCodes(items: PrintQrCodeConfigItem[]): PrintQrCodeConfigItem[] {
+  const byCode = new Map(items.map((item) => [item.code, item]));
+  return FIXED_PRINT_QR_CODE_TEMPLATES.map((template) => ({
+    ...template,
+    ...byCode.get(template.code),
+    code: template.code,
+  }));
+}
+
 function statusTone(status?: string | null): string {
   switch ((status || "").toLowerCase()) {
     case "paid":
@@ -675,10 +691,10 @@ function PrintSettingsPanel({
   onReload: () => void;
   onSave: (items: PrintQrCodeConfigItem[]) => void;
 }) {
-  const [draft, setDraft] = useState<PrintQrCodeConfigItem[]>(items);
+  const [draft, setDraft] = useState<PrintQrCodeConfigItem[]>(fixedPrintQrCodes(items));
 
   useEffect(() => {
-    setDraft(items);
+    setDraft(fixedPrintQrCodes(items));
   }, [items]);
 
   function updateItem(index: number, patch: Partial<PrintQrCodeConfigItem>) {
@@ -687,32 +703,10 @@ function PrintSettingsPanel({
     );
   }
 
-  function addItem() {
-    const nextIndex = draft.length + 1;
-    const usedSlots = new Set(draft.filter((item) => item.enabled).map((item) => Number(item.slot)));
-    const freeSlot = [1, 2, 3, 4].find((slot) => !usedSlots.has(slot)) ?? 4;
-    setDraft((current) => [
-      ...current,
-      {
-        code: `qr_${nextIndex}`,
-        label: `QR ${nextIndex}`,
-        provider: "mkassa",
-        enabled: true,
-        slot: freeSlot,
-        sort_order: nextIndex * 10,
-      },
-    ]);
-  }
-
-  function removeItem(index: number) {
-    setDraft((current) => current.filter((_, itemIndex) => itemIndex !== index));
-  }
-
   function normalizedDraft(): PrintQrCodeConfigItem[] {
-    return draft
+    return fixedPrintQrCodes(draft)
       .map((item, index) => ({
         ...item,
-        code: item.code.trim().toLowerCase(),
         label: item.label.trim(),
         slot: Number(item.slot) || 1,
         sort_order: Number(item.sort_order) || (index + 1) * 10,
@@ -723,12 +717,10 @@ function PrintSettingsPanel({
       );
   }
 
-  const hasDuplicateCodes = new Set(draft.map((item) => item.code.trim().toLowerCase())).size !== draft.length;
   const enabledSlots = draft.filter((item) => item.enabled).map((item) => Number(item.slot));
   const hasDuplicateSlots = new Set(enabledSlots).size !== enabledSlots.length;
-  const hasEmptyFields = draft.some((item) => !item.code.trim() || !item.label.trim());
-  const canSave =
-    draft.length > 0 && !hasDuplicateCodes && !hasDuplicateSlots && !hasEmptyFields && !state.loading;
+  const hasEmptyFields = draft.some((item) => !item.label.trim());
+  const canSave = !hasDuplicateSlots && !hasEmptyFields && !state.loading;
 
   return (
     <section className="settings-panel">
@@ -736,7 +728,7 @@ function PrintSettingsPanel({
         <div>
           <h2>Печатные QR-коды для 1С</h2>
           <p className="hint-copy">
-            1С будет брать этот список через backend и печатать включенные QR в выбранных слотах макета.
+            1С печатает только эти 4 фиксированных кода. Можно включать, менять подпись, provider и слот.
           </p>
         </div>
         <div className="settings-actions">
@@ -752,9 +744,8 @@ function PrintSettingsPanel({
       </div>
 
       {state.error && <p className="error-copy">{state.error}</p>}
-      {hasDuplicateCodes && <p className="error-copy">Коды должны быть уникальными.</p>}
       {hasDuplicateSlots && <p className="error-copy">У включенных QR не должен повторяться слот.</p>}
-      {hasEmptyFields && <p className="error-copy">Заполните код и подпись для каждой строки.</p>}
+      {hasEmptyFields && <p className="error-copy">Заполните подпись для каждой строки.</p>}
 
       <div className="settings-table-wrap">
         <table className="settings-table">
@@ -766,7 +757,6 @@ function PrintSettingsPanel({
               <th>Код</th>
               <th>Подпись</th>
               <th>Provider</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -799,10 +789,7 @@ function PrintSettingsPanel({
                   />
                 </td>
                 <td>
-                  <input
-                    value={item.code}
-                    onChange={(event) => updateItem(index, { code: event.target.value })}
-                  />
+                  <span className="mono">{item.code}</span>
                 </td>
                 <td>
                   <input
@@ -821,21 +808,11 @@ function PrintSettingsPanel({
                     <option value="odengi">O!Dengi / O!Bank</option>
                   </select>
                 </td>
-                <td>
-                  <button className="icon-action" type="button" onClick={() => removeItem(index)}>
-                    <Icon name="ban" size={15} />
-                  </button>
-                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-
-      <button className="secondary-action" type="button" onClick={addItem}>
-        <Icon name="plus" size={15} />
-        Добавить QR
-      </button>
 
       <div className="settings-note">
         <strong>Для 1С:</strong> после этой правки расширение должно вызывать один endpoint{" "}

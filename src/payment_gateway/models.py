@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 MAX_METADATA_KEYS = 5
 MAX_METADATA_VALUE_LENGTH = 150
 SUPPORTED_PRINT_QR_PROVIDERS = {"mkassa", "odengi"}
+FIXED_PRINT_QR_CODES = {"mbank", "obank", "qr_3", "qr_4"}
 
 
 class TransactionStatus(StrEnum):
@@ -363,7 +364,7 @@ class PrintQRCodeConfigItem(APIModel):
 
 
 class PrintQRCodeConfigUpdate(APIModel):
-    items: list[PrintQRCodeConfigItem] = Field(min_length=1, max_length=10)
+    items: list[PrintQRCodeConfigItem] = Field(min_length=4, max_length=4)
 
     @field_validator("items")
     @classmethod
@@ -374,6 +375,9 @@ class PrintQRCodeConfigUpdate(APIModel):
         codes = [item.code for item in value]
         if len(codes) != len(set(codes)):
             raise ValueError("print QR codes must be unique")
+        if set(codes) != FIXED_PRINT_QR_CODES:
+            expected = ", ".join(sorted(FIXED_PRINT_QR_CODES))
+            raise ValueError(f"print QR codes must be exactly: {expected}")
         enabled_slots = [item.slot for item in value if item.enabled]
         if len(enabled_slots) != len(set(enabled_slots)):
             raise ValueError("enabled print QR slots must be unique")

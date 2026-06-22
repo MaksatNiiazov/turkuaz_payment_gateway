@@ -49,7 +49,24 @@ DEFAULT_PRINT_QR_CODES = [
         "slot": 2,
         "sort_order": 20,
     },
+    {
+        "code": "qr_3",
+        "label": "QR 3",
+        "provider": "mkassa",
+        "enabled": False,
+        "slot": 3,
+        "sort_order": 30,
+    },
+    {
+        "code": "qr_4",
+        "label": "QR 4",
+        "provider": "odengi",
+        "enabled": False,
+        "slot": 4,
+        "sort_order": 40,
+    },
 ]
+FIXED_PRINT_QR_CODE_CODES = tuple(item["code"] for item in DEFAULT_PRINT_QR_CODES)
 
 
 metadata = MetaData()
@@ -353,7 +370,11 @@ class PaymentStore:
         return None
 
     def list_print_qr_codes(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
-        query = select(print_qr_codes).order_by(print_qr_codes.c.sort_order, print_qr_codes.c.code)
+        query = (
+            select(print_qr_codes)
+            .where(print_qr_codes.c.code.in_(FIXED_PRINT_QR_CODE_CODES))
+            .order_by(print_qr_codes.c.sort_order, print_qr_codes.c.code)
+        )
         if enabled_only:
             query = query.where(print_qr_codes.c.enabled.is_(True))
         with self.engine.begin() as connection:
@@ -381,8 +402,13 @@ class PaymentStore:
 
     def ensure_default_print_qr_codes(self) -> None:
         with self.engine.begin() as connection:
-            existing = connection.execute(select(print_qr_codes.c.code).limit(1)).first()
-            if existing is not None:
+            existing_codes = {
+                row[0] for row in connection.execute(select(print_qr_codes.c.code)).fetchall()
+            }
+            missing_items = [
+                item for item in DEFAULT_PRINT_QR_CODES if item["code"] not in existing_codes
+            ]
+            if not missing_items:
                 return
             now = self._now()
             connection.execute(
@@ -393,7 +419,7 @@ class PaymentStore:
                         "created_at": now,
                         "updated_at": now,
                     }
-                    for item in DEFAULT_PRINT_QR_CODES
+                    for item in missing_items
                 ],
             )
 
