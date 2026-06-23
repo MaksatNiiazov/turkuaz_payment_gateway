@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from payment_gateway.gateway import PaymentGateway
@@ -19,6 +20,9 @@ from payment_gateway.store import PaymentStore, WebhookStoreResult
 
 
 REUSABLE_INVOICE_QR_STATUSES = {"inited", "waiting", "qr_scanned", "paid"}
+AUTO_CANCEL_INVOICE_QR_STATUSES = {"inited", "waiting", "qr_scanned", "unknown"}
+PAID_STATUS = "paid"
+logger = logging.getLogger(__name__)
 
 
 class PaymentService:
@@ -84,6 +88,7 @@ class PaymentService:
             provider=provider.name,
             transaction_id_override=transaction_id,
         )
+        await self.cancel_other_invoice_transactions_if_paid(transaction_id)
         return response
 
     async def cancel_transaction(
@@ -146,14 +151,42 @@ class PaymentService:
     ) -> BranchListResponse:
         return await self.gateway.provider(provider_name).branches(page=page)
 
-    def save_webhook(
+    async def save_webhook(
         self,
         payload: WebhookPayload,
         *,
         provider_name: str | None = None,
     ) -> WebhookStoreResult:
         provider = self.gateway.provider(provider_name)
-        return self.store.save_webhook(payload, provider=provider.name)
+        result = self.store.save_webhook(payload, provider=provider.name)
+        await self.cancel_other_invoice_transactions_if_paid(result.transaction_id)
+        return result
+
+    async def cancel_other_invoice_transactions_if_paid(self, transaction_id: str) -> None:
+        paid_transaction = self.store.get_transaction(transaction_id)
+        if paid_transaction is None or paid_transaction.get("status") != PAID_STATUS:
+            return
+
+        external_invoice_id = paid_transaction.get("external_invoice_id")
+        if not isinstance(external_invoice_id, str) or not external_invoice_id.strip():
+            return
+
+        related_transactions = self.store.list_invoice_transactions_for_cancel(
+            external_invoice_id=external_invoice_id,
+            exclude_transaction_id=transaction_id,
+            statuses=AUTO_CANCEL_INVOICE_QR_STATUSES,
+        )
+        for item in related_transactions:
+            related_transaction_id = str(item["id"])
+            try:
+                await self.cancel_transaction(related_transaction_id)
+            except Exception:
+                logger.exception(
+                    "Failed to auto-cancel transaction %s after invoice %s was paid by %s",
+                    related_transaction_id,
+                    external_invoice_id,
+                    transaction_id,
+                )
 
     def _saved_provider_name(self, transaction_id: str) -> str | None:
         saved = self.store.get_transaction(transaction_id)

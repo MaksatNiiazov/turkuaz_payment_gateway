@@ -11,7 +11,8 @@
   "dependencies": {
     "@turkuaz/ui": "file:../../turkuaz-ui",
     "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "react-dom": "^19.2.3",
+    "scheduler": "^0.27.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.7",

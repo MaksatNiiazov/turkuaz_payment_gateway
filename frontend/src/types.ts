@@ -8,6 +8,7 @@ export type TransactionRow = {
   amount: number | null;
   branch: string | null;
   cashier: string | null;
+  external_invoice_id: string | null;
   created_at: string | null;
   paid_at: string | null;
   payment_token: string | null;
@@ -66,4 +67,10 @@ export type PrintQrCodeConfigItem = {
   sort_order: number;
 };
 
-export type ViewMode = "transactions" | "webhooks" | "access" | "qr-demo" | "print-settings";
+export type ViewMode =
+  | "transactions"
+  | "webhooks"
+  | "invoices"
+  | "access"
+  | "qr-demo"
+  | "print-settings";

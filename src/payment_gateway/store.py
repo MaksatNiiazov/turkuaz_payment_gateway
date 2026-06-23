@@ -369,6 +369,25 @@ class PaymentStore:
                     return item
         return None
 
+    def list_invoice_transactions_for_cancel(
+        self,
+        *,
+        external_invoice_id: str,
+        exclude_transaction_id: str,
+        statuses: set[str],
+    ) -> list[dict[str, Any]]:
+        query = (
+            select(transactions)
+            .where(transactions.c.external_invoice_id == external_invoice_id)
+            .where(transactions.c.id != exclude_transaction_id)
+            .where(transactions.c.status.in_(statuses))
+            .order_by(desc(transactions.c.updated_at))
+            .limit(100)
+        )
+        with self.engine.begin() as connection:
+            rows = connection.execute(query).mappings()
+            return [self._transaction_row_to_dict(row) for row in rows]
+
     def list_print_qr_codes(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
         query = (
             select(print_qr_codes)

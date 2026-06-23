@@ -74,6 +74,7 @@ class FakeProvider(PaymentProvider):
         self.transaction_id = transaction_id
         self.last_dynamic_payload = None
         self.canceled_transaction_id = None
+        self.canceled_transaction_ids: list[str] = []
         self.dynamic_create_count = 0
 
     async def create_dynamic_qr(self, payload):
@@ -102,6 +103,7 @@ class FakeProvider(PaymentProvider):
 
     async def cancel_transaction(self, transaction_id: str):
         self.canceled_transaction_id = transaction_id
+        self.canceled_transaction_ids.append(transaction_id)
         return CancelResponse(transaction_id=transaction_id, message="canceled")
 
     async def list_transactions(self, **_: object):
@@ -879,6 +881,64 @@ def test_webhook_is_idempotent_and_does_not_require_integration_key(tmp_path: Pa
     assert second.json()["duplicate"] is True
     assert local.status_code == 200
     assert local.json()["status"] == "paid"
+
+
+def test_paid_webhook_cancels_other_active_transaction_for_same_invoice(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    store.initialize()
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    store.upsert_transaction(
+        transaction_id="MBANK-1",
+        status="waiting",
+        transaction_type="qr",
+        external_invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id, "print_qr_code": "mbank"},
+        raw_payload={"id": "MBANK-1"},
+        provider="mkassa",
+    )
+    store.upsert_transaction(
+        transaction_id="OBANK-1",
+        status="waiting",
+        transaction_type="qr",
+        external_invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id, "print_qr_code": "obank"},
+        raw_payload={
+            "id": "OBANK-1",
+            "provider_transaction_id": "987654321",
+            "invoice_id": "987654321",
+        },
+        provider="odengi",
+    )
+    mkassa = FakeProvider("mkassa", "MBANK-1")
+    odengi = FakeProvider("odengi", "OBANK-1")
+    app = create_app(
+        settings=make_multi_provider_settings(db_path),
+        providers=[mkassa, odengi],
+        store=store,
+    )
+
+    with TestClient(app) as client:
+        webhook = client.post(
+            "/api/v1/webhooks/mkassa",
+            json={
+                "id": "MBANK-1",
+                "status": "paid",
+                "amount": "100",
+                "metadata": {"invoice_id": invoice_id, "print_qr_code": "mbank"},
+            },
+        )
+        other = client.get(
+            "/api/v1/local/transactions/OBANK-1",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert webhook.status_code == 200
+    assert webhook.json()["duplicate"] is False
+    assert other.status_code == 200
+    assert other.json()["status"] == "canceled"
+    assert odengi.canceled_transaction_ids == ["987654321"]
+    assert mkassa.canceled_transaction_ids == []
 
 
 def test_provider_routing_uses_integration_name_mapping(tmp_path: Path) -> None:

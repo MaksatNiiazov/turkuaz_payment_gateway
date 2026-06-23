@@ -1141,7 +1141,7 @@ def create_app(
         request: Request,
         payload: WebhookPayload,
     ) -> WebhookAck:
-        result = payments(request).save_webhook(payload, provider_name=PROVIDER_MKASSA)
+        result = await payments(request).save_webhook(payload, provider_name=PROVIDER_MKASSA)
         return WebhookAck(transaction_id=result.transaction_id, duplicate=result.duplicate)
 
     @webhook_router.post(
@@ -1160,7 +1160,7 @@ def create_app(
         payload: ODengiWebhookPayload,
     ) -> WebhookAck:
         normalized = normalize_odengi_webhook(payload)
-        result = payments(request).save_webhook(normalized, provider_name=PROVIDER_ODENGI)
+        result = await payments(request).save_webhook(normalized, provider_name=PROVIDER_ODENGI)
         return WebhookAck(transaction_id=result.transaction_id, duplicate=result.duplicate)
 
     app.include_router(protected_router)

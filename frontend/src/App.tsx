@@ -12,6 +12,7 @@ import {
   clearToken,
   createDemoDynamicQr,
   fetchAccessEvents,
+  fetchInvoiceTransactions,
   fetchPrintQrCodes,
   fetchTransactions,
   fetchWebhooks,
@@ -119,6 +120,26 @@ function canCancelTransaction(transaction: TransactionRow | null): boolean {
   );
 }
 
+function invoicePaymentMetrics(rows: TransactionRow[]) {
+  const paid = rows.filter((item) => item.status === "paid").length;
+  const active = rows.filter((item) =>
+    ["inited", "waiting", "qr_scanned"].includes(item.status || ""),
+  ).length;
+  const canceled = rows.filter((item) => item.status === "canceled").length;
+  const totalAmount = rows.reduce((sum, item) => sum + (item.amount ?? 0), 0);
+  return { active, canceled, paid, totalAmount };
+}
+
+function invoiceLabel(transaction: TransactionRow): string {
+  return (
+    transaction.external_invoice_id ||
+    transaction.metadata?.invoice_id ||
+    transaction.metadata?.order_id ||
+    transaction.metadata?.invoice_number ||
+    "-"
+  );
+}
+
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(getToken()));
   const isLoginPath = typeof window !== "undefined" && window.location.pathname === "/login";
@@ -127,6 +148,9 @@ function App() {
   const [statusFilter, setStatusFilter] = useState("");
   const [providerFilter, setProviderFilter] = useState("");
   const [transactions, setTransactions] = useState<TransactionRow[]>([]);
+  const [invoiceId, setInvoiceId] = useState("");
+  const [invoicePayments, setInvoicePayments] = useState<TransactionRow[]>([]);
+  const [invoiceState, setInvoiceState] = useState<LoadState>({ loading: false, error: null });
   const [webhooks, setWebhooks] = useState<WebhookEvent[]>([]);
   const [accessEvents, setAccessEvents] = useState<AccessEvent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -160,6 +184,8 @@ function App() {
       { label: "Webhook", value: webhooks.length, icon: "webhook" as const },
     ];
   }, [transactions, webhooks]);
+
+  const invoiceMetrics = useMemo(() => invoicePaymentMetrics(invoicePayments), [invoicePayments]);
 
   const loadData = useCallback(async () => {
     setState({ loading: true, error: null });
@@ -202,14 +228,37 @@ function App() {
     }
   }, []);
 
+  const loadInvoicePayments = useCallback(async () => {
+    const trimmedInvoiceId = invoiceId.trim();
+    if (!trimmedInvoiceId) {
+      setInvoicePayments([]);
+      setInvoiceState({ loading: false, error: "Введите invoice_id из 1С." });
+      return;
+    }
+
+    setInvoiceState({ loading: true, error: null });
+    try {
+      const rows = await fetchInvoiceTransactions(trimmedInvoiceId);
+      setInvoicePayments(rows);
+      setInvoiceState({ loading: false, error: null });
+    } catch (error) {
+      setInvoiceState({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [invoiceId]);
+
   useEffect(() => {
     if (!isAuthenticated || isLoginPath) return;
     if (view === "print-settings") {
       void loadPrintSettings();
+    } else if (view === "invoices") {
+      if (invoiceId.trim()) void loadInvoicePayments();
     } else if (view !== "qr-demo") {
       void loadData();
     }
-  }, [isAuthenticated, isLoginPath, loadData, loadPrintSettings, view]);
+  }, [invoiceId, isAuthenticated, isLoginPath, loadData, loadInvoicePayments, loadPrintSettings, view]);
 
   useEffect(() => {
     let cancelled = false;
@@ -317,6 +366,43 @@ function App() {
     }
   }
 
+  async function handleInvoiceRefresh(transaction: TransactionRow) {
+    if (refreshingId) return;
+    setRefreshingId(transaction.id);
+    setInvoiceState({ loading: false, error: null });
+    try {
+      await refreshTransaction(transaction.id);
+      await loadInvoicePayments();
+    } catch (error) {
+      setInvoiceState({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setRefreshingId(null);
+    }
+  }
+
+  async function handleInvoiceCancel(transaction: TransactionRow) {
+    if (!canCancelTransaction(transaction) || cancelingId) return;
+    const confirmed = window.confirm(`Отменить оплату ${transaction.id} внутри инвойса?`);
+    if (!confirmed) return;
+
+    setCancelingId(transaction.id);
+    setInvoiceState({ loading: false, error: null });
+    try {
+      await cancelTransaction(transaction.id);
+      await loadInvoicePayments();
+    } catch (error) {
+      setInvoiceState({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setCancelingId(null);
+    }
+  }
+
   const navItems = [
     {
       key: "transactions",
@@ -331,6 +417,13 @@ function App() {
       icon: "webhook" as const,
       active: view === "webhooks",
       onClick: () => setView("webhooks"),
+    },
+    {
+      key: "invoices",
+      label: "Инвойсы",
+      icon: "file" as const,
+      active: view === "invoices",
+      onClick: () => setView("invoices"),
     },
     {
       key: "access",
@@ -361,11 +454,15 @@ function App() {
         ? "Webhook события"
         : view === "access"
           ? "Доступы"
+          : view === "invoices"
+          ? "Инвойс"
           : view === "print-settings"
             ? "QR для 1С"
             : "QR Demo";
   const pageDescription =
-    view === "print-settings"
+    view === "invoices"
+      ? "Один 1С invoice_id и все связанные оплаты в МБанк, О!Банк и других QR."
+      : view === "print-settings"
       ? "Порядок, подписи и включенные QR-коды для печатной формы 1С."
       : view === "qr-demo"
       ? "Создание тестового динамического QR через backend API."
@@ -411,7 +508,11 @@ function App() {
           label: "Обновить",
           icon: "refresh",
           onClick: () =>
-            view === "print-settings" ? void loadPrintSettings() : void loadData(),
+            view === "print-settings"
+              ? void loadPrintSettings()
+              : view === "invoices"
+                ? void loadInvoicePayments()
+                : void loadData(),
         },
       ]}
       environment="local"
@@ -432,6 +533,19 @@ function App() {
             result={qrResult}
             state={qrState}
             onCreate={(payload) => void handleCreateDemoQr(payload)}
+          />
+        ) : view === "invoices" ? (
+          <InvoicePanel
+            cancelingId={cancelingId}
+            invoiceId={invoiceId}
+            metrics={invoiceMetrics}
+            refreshingId={refreshingId}
+            rows={invoicePayments}
+            state={invoiceState}
+            onCancel={(transaction) => void handleInvoiceCancel(transaction)}
+            onInvoiceIdChange={setInvoiceId}
+            onRefresh={() => void loadInvoicePayments()}
+            onRefreshStatus={(transaction) => void handleInvoiceRefresh(transaction)}
           />
         ) : (
           <>
@@ -548,7 +662,7 @@ function TransactionsTable({
             <td><span className={`status ${statusTone(row.status)}`}>{row.status || "unknown"}</span></td>
             <td>{row.transaction_type || "-"}</td>
             <td>{formatAmount(row.amount)}</td>
-            <td>{row.metadata?.invoice_number || row.metadata?.order_id || "-"}</td>
+            <td>{invoiceLabel(row)}</td>
             <td>{formatDate(row.updated_at)}</td>
           </tr>
         ))}
@@ -613,6 +727,170 @@ function AccessTable({ rows }: { rows: AccessEvent[] }) {
       </tbody>
     </table>
   );
+}
+
+function InvoicePanel({
+  invoiceId,
+  rows,
+  metrics,
+  state,
+  cancelingId,
+  refreshingId,
+  onInvoiceIdChange,
+  onRefresh,
+  onRefreshStatus,
+  onCancel,
+}: {
+  invoiceId: string;
+  rows: TransactionRow[];
+  metrics: ReturnType<typeof invoicePaymentMetrics>;
+  state: LoadState;
+  cancelingId: string | null;
+  refreshingId: string | null;
+  onInvoiceIdChange: (value: string) => void;
+  onRefresh: () => void;
+  onRefreshStatus: (transaction: TransactionRow) => void;
+  onCancel: (transaction: TransactionRow) => void;
+}) {
+  const paidTransaction = rows.find((item) => item.status === "paid");
+  const invoiceNumber = rows
+    .map((item) => item.metadata?.invoice_number)
+    .find((value): value is string => Boolean(value));
+
+  return (
+    <section className="invoice-panel">
+      <form
+        className="toolbar invoice-search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onRefresh();
+        }}
+      >
+        <label>
+          Invoice ID из 1С
+          <input
+            autoComplete="off"
+            placeholder="550e8400-e29b-41d4-a716-446655440000"
+            value={invoiceId}
+            onChange={(event) => onInvoiceIdChange(event.target.value)}
+          />
+        </label>
+        <button className="refresh" disabled={state.loading} type="submit">
+          <Icon name="search" size={16} />
+          {state.loading ? "Поиск..." : "Показать оплаты"}
+        </button>
+        <div className="toolbar-state">
+          {state.loading ? "Загрузка..." : state.error ? state.error : "Инвойс готов к проверке"}
+        </div>
+      </form>
+
+      <section className="metrics-grid invoice-metrics">
+        <div className="metric">
+          <Icon name="banknote" size={20} />
+          <span>Оплат</span>
+          <strong>{rows.length}</strong>
+        </div>
+        <div className="metric">
+          <Icon name="shield" size={20} />
+          <span>Paid</span>
+          <strong>{metrics.paid}</strong>
+        </div>
+        <div className="metric">
+          <Icon name="activity" size={20} />
+          <span>Активные</span>
+          <strong>{metrics.active}</strong>
+        </div>
+        <div className="metric">
+          <Icon name="ban" size={20} />
+          <span>Отменены</span>
+          <strong>{metrics.canceled}</strong>
+        </div>
+      </section>
+
+      {rows.length > 0 && (
+        <section className="invoice-summary">
+          <div>
+            <span className="summary-label">Invoice</span>
+            <strong className="mono">{invoiceId.trim() || invoiceLabel(rows[0])}</strong>
+          </div>
+          <div>
+            <span className="summary-label">Номер</span>
+            <strong>{invoiceNumber || "-"}</strong>
+          </div>
+          <div>
+            <span className="summary-label">Сумма</span>
+            <strong>{formatAmount(metrics.totalAmount)}</strong>
+          </div>
+          <div>
+            <span className="summary-label">Оплачено через</span>
+            <strong>{paidTransaction ? providerLabel(paidTransaction.provider) : "-"}</strong>
+          </div>
+        </section>
+      )}
+
+      <div className="table-panel invoice-table-panel">
+        {rows.length === 0 ? (
+          <EmptyState />
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Payment ID</th>
+                <th>Status</th>
+                <th>Amount</th>
+                <th>QR</th>
+                <th>Updated</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id}>
+                  <td>{providerLabel(row.provider)}</td>
+                  <td className="mono">{truncate(row.id, 30)}</td>
+                  <td><span className={`status ${statusTone(row.status)}`}>{row.status || "unknown"}</span></td>
+                  <td>{formatAmount(row.amount)}</td>
+                  <td>{row.metadata?.print_qr_code || "-"}</td>
+                  <td>{formatDate(row.updated_at)}</td>
+                  <td>
+                    <div className="row-actions">
+                      <button
+                        className="icon-action"
+                        disabled={refreshingId === row.id}
+                        title="Обновить статус"
+                        type="button"
+                        onClick={() => onRefreshStatus(row)}
+                      >
+                        <Icon name="refresh" size={15} />
+                      </button>
+                      {canCancelTransaction(row) && (
+                        <button
+                          className="icon-action danger-icon"
+                          disabled={cancelingId === row.id}
+                          title="Отменить оплату"
+                          type="button"
+                          onClick={() => onCancel(row)}
+                        >
+                          <Icon name="ban" size={15} />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function providerLabel(provider: string): string {
+  if (provider === "mkassa") return "MBank";
+  if (provider === "odengi") return "О!Банк";
+  return provider;
 }
 
 function TransactionDetails({

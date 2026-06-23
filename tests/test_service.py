@@ -13,6 +13,7 @@ from payment_gateway.models import (
     Transaction,
     TransactionDetailListResponse,
     TransactionListResponse,
+    WebhookPayload,
 )
 from payment_gateway.providers.base import PaymentProvider
 from payment_gateway.service import PaymentService
@@ -20,14 +21,15 @@ from payment_gateway.store import SQLitePaymentStore
 
 
 class FakeProvider(PaymentProvider):
-    name = "fake"
-
-    def __init__(self) -> None:
+    def __init__(self, name: str = "fake", transaction_id: str = "FAKE-1") -> None:
+        self.name = name
+        self.transaction_id = transaction_id
         self.canceled_transaction_id: str | None = None
+        self.canceled_transaction_ids: list[str] = []
 
     async def create_dynamic_qr(self, payload: DynamicQRCreate) -> DynamicQRResponse:
         return DynamicQRResponse(
-            id="FAKE-1",
+            id=self.transaction_id,
             amount=payload.amount,
             status="inited",
             transaction_type="qr",
@@ -51,6 +53,7 @@ class FakeProvider(PaymentProvider):
 
     async def cancel_transaction(self, transaction_id: str) -> CancelResponse:
         self.canceled_transaction_id = transaction_id
+        self.canceled_transaction_ids.append(transaction_id)
         return CancelResponse(transaction_id=transaction_id, message="OK")
 
     async def list_transactions(self, **_: object) -> TransactionListResponse:
@@ -163,3 +166,57 @@ async def test_payment_service_cancels_by_saved_provider_transaction_id(tmp_path
     assert response.transaction_id == "TIGER-1"
     assert provider.canceled_transaction_id == "553459220202"
     assert store.get_transaction("TIGER-1")["status"] == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_payment_service_auto_cancels_other_invoice_qr_after_paid_webhook(tmp_path) -> None:
+    store = SQLitePaymentStore(tmp_path / "app.db")
+    store.initialize()
+    mkassa = FakeProvider("mkassa", "MBANK-1")
+    odengi = FakeProvider("odengi", "OBANK-1")
+    service = PaymentService(
+        gateway=PaymentGateway([mkassa, odengi], default_provider="mkassa"),
+        store=store,
+    )
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    store.upsert_transaction(
+        transaction_id="MBANK-1",
+        status="waiting",
+        transaction_type="qr",
+        external_invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id, "print_qr_code": "mbank"},
+        raw_payload={"id": "MBANK-1"},
+        provider="mkassa",
+    )
+    store.upsert_transaction(
+        transaction_id="OBANK-1",
+        status="waiting",
+        transaction_type="qr",
+        external_invoice_id=invoice_id,
+        metadata={
+            "invoice_id": invoice_id,
+            "print_qr_code": "obank",
+            "provider_invoice_id": "987654321",
+        },
+        raw_payload={
+            "id": "OBANK-1",
+            "provider_transaction_id": "987654321",
+            "invoice_id": "987654321",
+        },
+        provider="odengi",
+    )
+
+    await service.save_webhook(
+        WebhookPayload(
+            id="MBANK-1",
+            status="paid",
+            amount=100,
+            metadata={"invoice_id": invoice_id, "print_qr_code": "mbank"},
+        ),
+        provider_name="mkassa",
+    )
+
+    assert store.get_transaction("MBANK-1")["status"] == "paid"
+    assert store.get_transaction("OBANK-1")["status"] == "canceled"
+    assert odengi.canceled_transaction_ids == ["987654321"]
+    assert mkassa.canceled_transaction_ids == []

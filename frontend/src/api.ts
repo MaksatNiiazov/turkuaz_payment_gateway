@@ -18,6 +18,7 @@ type ListFilters = {
   limit: number;
   status?: string;
   provider?: string;
+  invoice_id?: string;
 };
 
 async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -56,6 +57,10 @@ export function fetchTransactions(filters: ListFilters): Promise<TransactionRow[
   return requestJson<TransactionRow[]>(
     `/api/v1/local/transactions?${params(filters)}`,
   );
+}
+
+export function fetchInvoiceTransactions(invoiceId: string, limit = 100): Promise<TransactionRow[]> {
+  return fetchTransactions({ limit, invoice_id: invoiceId });
 }
 
 export function fetchWebhooks(limit: number): Promise<WebhookEvent[]> {

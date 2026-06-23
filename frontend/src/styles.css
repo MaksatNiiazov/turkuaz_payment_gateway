@@ -139,3 +139,73 @@
   color: var(--text, #0f172a);
   cursor: pointer;
 }
+
+.icon-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.danger-icon {
+  color: var(--danger, #b91c1c);
+}
+
+.invoice-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.invoice-search {
+  align-items: end;
+}
+
+.invoice-search label {
+  min-width: min(100%, 420px);
+}
+
+.invoice-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  border: 1px solid var(--border, #d7dee8);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--surface, #ffffff);
+}
+
+.invoice-summary > div {
+  min-width: 0;
+}
+
+.summary-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-muted, #64748b);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.invoice-summary strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.invoice-table-panel {
+  overflow-x: auto;
+}
+
+.row-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+@media (max-width: 820px) {
+  .invoice-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .invoice-summary {
+    grid-template-columns: 1fr;
+  }
+}
