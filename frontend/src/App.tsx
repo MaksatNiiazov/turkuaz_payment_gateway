@@ -126,8 +126,8 @@ function invoicePaymentMetrics(rows: TransactionRow[]) {
     ["inited", "waiting", "qr_scanned"].includes(item.status || ""),
   ).length;
   const canceled = rows.filter((item) => item.status === "canceled").length;
-  const totalAmount = rows.reduce((sum, item) => sum + (item.amount ?? 0), 0);
-  return { active, canceled, paid, totalAmount };
+  const invoiceAmount = rows.find((item) => item.status === "paid")?.amount ?? rows[0]?.amount ?? null;
+  return { active, canceled, invoiceAmount, paid };
 }
 
 function invoiceLabel(transaction: TransactionRow): string {
@@ -138,6 +138,57 @@ function invoiceLabel(transaction: TransactionRow): string {
     transaction.metadata?.invoice_number ||
     "-"
   );
+}
+
+type TransactionGroup = {
+  key: string;
+  label: string;
+  hasBusinessKey: boolean;
+  invoiceNumber: string | null;
+  latestUpdated: string;
+  metrics: ReturnType<typeof invoicePaymentMetrics>;
+  paidProvider: string | null;
+  providers: string[];
+  rows: TransactionRow[];
+};
+
+function groupTransactionsByPayment(rows: TransactionRow[]): TransactionGroup[] {
+  const groups = new Map<string, TransactionRow[]>();
+  for (const row of rows) {
+    const businessKey = invoiceLabel(row);
+    const key = businessKey === "-" ? `transaction:${row.id}` : `payment:${businessKey}`;
+    const groupRows = groups.get(key);
+    if (groupRows) {
+      groupRows.push(row);
+    } else {
+      groups.set(key, [row]);
+    }
+  }
+
+  return [...groups.entries()]
+    .map(([key, groupRows]) => {
+      const hasBusinessKey = key.startsWith("payment:");
+      const metrics = invoicePaymentMetrics(groupRows);
+      const paidTransaction = groupRows.find((item) => item.status === "paid") ?? null;
+      const latestUpdated = groupRows
+        .map((item) => item.updated_at)
+        .sort((left, right) => right.localeCompare(left))[0];
+      const providers = [...new Set(groupRows.map((item) => providerLabel(item.provider)))];
+      return {
+        key,
+        label: hasBusinessKey ? key.replace("payment:", "") : "Без счета 1С",
+        hasBusinessKey,
+        invoiceNumber:
+          groupRows.map((item) => item.metadata?.invoice_number).find((value): value is string => Boolean(value)) ??
+          null,
+        latestUpdated,
+        metrics,
+        paidProvider: paidTransaction ? providerLabel(paidTransaction.provider) : null,
+        providers,
+        rows: groupRows,
+      };
+    })
+    .sort((left, right) => right.latestUpdated.localeCompare(left.latestUpdated));
 }
 
 function App() {
@@ -232,7 +283,7 @@ function App() {
     const trimmedInvoiceId = invoiceId.trim();
     if (!trimmedInvoiceId) {
       setInvoicePayments([]);
-      setInvoiceState({ loading: false, error: "Введите invoice_id из 1С." });
+      setInvoiceState({ loading: false, error: "Введите ID счета или документа из 1С." });
       return;
     }
 
@@ -420,7 +471,7 @@ function App() {
     },
     {
       key: "invoices",
-      label: "Инвойсы",
+      label: "Счета 1С",
       icon: "file" as const,
       active: view === "invoices",
       onClick: () => setView("invoices"),
@@ -455,13 +506,13 @@ function App() {
         : view === "access"
           ? "Доступы"
           : view === "invoices"
-          ? "Инвойс"
+          ? "Счет 1С"
           : view === "print-settings"
             ? "QR для 1С"
             : "QR Demo";
   const pageDescription =
     view === "invoices"
-      ? "Один 1С invoice_id и все связанные оплаты в МБанк, О!Банк и других QR."
+      ? "Один счет из 1С и все связанные оплаты в МБанк, О!Банк и других QR."
       : view === "print-settings"
       ? "Порядок, подписи и включенные QR-коды для печатной формы 1С."
       : view === "qr-demo"
@@ -637,37 +688,91 @@ function TransactionsTable({
   onSelect: (id: string) => void;
 }) {
   if (rows.length === 0) return <EmptyState />;
+  const groups = groupTransactionsByPayment(rows);
   return (
     <table>
       <thead>
         <tr>
-          <th>ID</th>
+          <th>Платеж / операция</th>
           <th>Provider</th>
           <th>Status</th>
           <th>Type</th>
           <th>Amount</th>
-          <th>Invoice</th>
+          <th>Счет 1С</th>
           <th>Updated</th>
         </tr>
       </thead>
       <tbody>
-        {rows.map((row) => (
-          <tr
-            className={row.id === selectedId ? "selected" : ""}
-            key={row.id}
-            onClick={() => onSelect(row.id)}
-          >
-            <td className="mono">{truncate(row.id, 24)}</td>
-            <td>{row.provider}</td>
-            <td><span className={`status ${statusTone(row.status)}`}>{row.status || "unknown"}</span></td>
-            <td>{row.transaction_type || "-"}</td>
-            <td>{formatAmount(row.amount)}</td>
-            <td>{invoiceLabel(row)}</td>
-            <td>{formatDate(row.updated_at)}</td>
-          </tr>
+        {groups.map((group) => (
+          <TransactionGroupRows
+            group={group}
+            key={group.key}
+            selectedId={selectedId}
+            onSelect={onSelect}
+          />
         ))}
       </tbody>
     </table>
+  );
+}
+
+function TransactionGroupRows({
+  group,
+  selectedId,
+  onSelect,
+}: {
+  group: TransactionGroup;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const showGroupHeader = group.hasBusinessKey && group.rows.length > 1;
+  return (
+    <>
+      {showGroupHeader && (
+        <tr className="transaction-group-row">
+          <td colSpan={7}>
+            <div className="transaction-group-summary">
+              <div>
+                <span className="summary-label">Счет 1С</span>
+                <strong className="mono">{group.label}</strong>
+              </div>
+              <div>
+                <span className="summary-label">Номер</span>
+                <strong>{group.invoiceNumber || "-"}</strong>
+              </div>
+              <div>
+                <span className="summary-label">Сумма</span>
+                <strong>{formatAmount(group.metrics.invoiceAmount)}</strong>
+              </div>
+              <div>
+                <span className="summary-label">Оплата</span>
+                <strong>{group.paidProvider || "-"}</strong>
+              </div>
+              <div className="group-statuses">
+                <span className="status good">paid {group.metrics.paid}</span>
+                <span className="status wait">active {group.metrics.active}</span>
+                <span className="status bad">canceled {group.metrics.canceled}</span>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+      {group.rows.map((row) => (
+        <tr
+          className={`${row.id === selectedId ? "selected" : ""} ${showGroupHeader ? "transaction-child-row" : ""}`}
+          key={row.id}
+          onClick={() => onSelect(row.id)}
+        >
+          <td className="mono">{truncate(row.id, 24)}</td>
+          <td>{providerLabel(row.provider)}</td>
+          <td><span className={`status ${statusTone(row.status)}`}>{row.status || "unknown"}</span></td>
+          <td>{row.transaction_type || "-"}</td>
+          <td>{formatAmount(row.amount)}</td>
+          <td>{showGroupHeader ? row.metadata?.print_qr_code || "-" : invoiceLabel(row)}</td>
+          <td>{formatDate(row.updated_at)}</td>
+        </tr>
+      ))}
+    </>
   );
 }
 
@@ -767,7 +872,7 @@ function InvoicePanel({
         }}
       >
         <label>
-          Invoice ID из 1С
+          ID счета/документа из 1С
           <input
             autoComplete="off"
             placeholder="550e8400-e29b-41d4-a716-446655440000"
@@ -780,7 +885,7 @@ function InvoicePanel({
           {state.loading ? "Поиск..." : "Показать оплаты"}
         </button>
         <div className="toolbar-state">
-          {state.loading ? "Загрузка..." : state.error ? state.error : "Инвойс готов к проверке"}
+          {state.loading ? "Загрузка..." : state.error ? state.error : "Счет готов к проверке"}
         </div>
       </form>
 
@@ -810,7 +915,7 @@ function InvoicePanel({
       {rows.length > 0 && (
         <section className="invoice-summary">
           <div>
-            <span className="summary-label">Invoice</span>
+            <span className="summary-label">Счет 1С</span>
             <strong className="mono">{invoiceId.trim() || invoiceLabel(rows[0])}</strong>
           </div>
           <div>
@@ -819,7 +924,7 @@ function InvoicePanel({
           </div>
           <div>
             <span className="summary-label">Сумма</span>
-            <strong>{formatAmount(metrics.totalAmount)}</strong>
+            <strong>{formatAmount(metrics.invoiceAmount)}</strong>
           </div>
           <div>
             <span className="summary-label">Оплачено через</span>
@@ -987,7 +1092,7 @@ function PrintSettingsPanel({
         ...item,
         label: item.label.trim(),
         slot: Number(item.slot) || 1,
-        sort_order: Number(item.sort_order) || (index + 1) * 10,
+        sort_order: ((Number(item.slot) || 1) * 10) + index,
       }))
       .sort(
         (left, right) =>
@@ -1031,7 +1136,6 @@ function PrintSettingsPanel({
             <tr>
               <th>Печатать</th>
               <th>Слот</th>
-              <th>Порядок</th>
               <th>Код</th>
               <th>Подпись</th>
               <th>Provider</th>
@@ -1057,14 +1161,6 @@ function PrintSettingsPanel({
                     <option value={3}>Слот 3</option>
                     <option value={4}>Слот 4</option>
                   </select>
-                </td>
-                <td>
-                  <input
-                    min={0}
-                    type="number"
-                    value={item.sort_order}
-                    onChange={(event) => updateItem(index, { sort_order: Number(event.target.value) || 0 })}
-                  />
                 </td>
                 <td>
                   <span className="mono">{item.code}</span>
@@ -1291,7 +1387,7 @@ function QrDemoPanel({
               <dd className="mono">{result.id}</dd>
               {result.invoice_id && (
                 <>
-                  <dt>Provider invoice</dt>
+                  <dt>ID счета в банке</dt>
                   <dd className="mono">{result.invoice_id}</dd>
                 </>
               )}
