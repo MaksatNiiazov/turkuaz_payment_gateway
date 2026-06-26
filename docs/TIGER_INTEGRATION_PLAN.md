@@ -55,6 +55,28 @@ payment id        -> unique paid transaction ID for idempotency
 provider          -> mkassa / odengi
 ```
 
+## Verified Tiger Server Facts
+
+Read-only checks on the Tiger server confirmed:
+
+- `LObjects.dll` exists at `C:\LOGO\TIGER3ENT\LObjects.dll`.
+- `REGISTER.BAT` exists at `C:\LOGO\TIGER3ENT\REGISTER.BAT`.
+- `UnityObjects.UnityApplication` is registered in COM.
+- `UnityApplication.Version()` returns `Logo Objects 030700`.
+- `UnityApplication.GetAppPath()` returns `C:\LOGO\TIGER3ENT\`.
+- Working login flow is:
+
+```text
+Connect() -> UserLogin(username, password) -> CompanyLogin(126)
+```
+
+- After login, `CurrentFirm=126`, `CurrentPeriod=1`.
+- `NewQuery()` and `OpenDirect()` can read Tiger tables through LObjects.
+
+No document write was tested.
+
+Detailed progress log: [TIGER_PROGRESS_LOG.md](TIGER_PROGRESS_LOG.md).
+
 ## Proposed Contract To Tiger Integration API
 
 When a payment is confirmed as paid, PaymentGateway should send one payment event
@@ -171,10 +193,10 @@ the Tiger service cannot safely create accounting documents.
 
 On the Windows/Tiger server:
 
-1. Register `LObjects.dll`.
+1. Confirm `LObjects.dll` is registered.
 2. Create a small C# Console App on .NET Framework 4.7.2 or 4.8.
 3. Add `UnityObjects Library`.
-4. Run `UnityApplication.Connect(username, password, firmNo, periodNo)`.
+4. Run `Connect()`, `UserLogin(username, password)`, `CompanyLogin(firmNo)`.
 5. Confirm a simple read or test object creation in a test database.
 
 If `Connect()` does not work, stop here and fix Logo licensing, registration,
@@ -201,6 +223,16 @@ TIGER_INTEGRATION_ENABLED=true
 
 PaymentGateway should send to Tiger only when a local transaction status becomes
 `paid`.
+
+Before outbound delivery is implemented, verify the local event shape with:
+
+```http
+GET /api/v1/local/transactions/{transaction_id}/tiger-event-preview
+X-Admin-Key: <admin-secret>
+```
+
+This endpoint only builds the JSON event from a saved paid transaction. It does
+not call Tiger or any external integration service.
 
 Recommended behavior:
 
@@ -232,11 +264,16 @@ manual search.
 
 ## Practical Next Step
 
-The next real step is not Python code. It is the Windows/Tiger smoke test:
+The next real step is the Windows/Tiger worker smoke test:
 
 ```text
-UnityApplication.Connect(username, password, firmNo, periodNo)
+cd TigerIntegrationWorker
+dotnet run
+GET /tiger/version
+POST /tiger/test-login
+GET /tiger/clients/sample
 ```
 
-Once that works and the document type is confirmed, the PaymentGateway side can
-add a small outbound delivery module for paid transactions.
+Once that works on the Tiger server and the document type is confirmed, the
+PaymentGateway side can add a small outbound delivery module for paid
+transactions.

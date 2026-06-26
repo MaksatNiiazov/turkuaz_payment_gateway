@@ -152,6 +152,7 @@ PAYMENT_PROVIDER_BY_INTEGRATION=1c_obank:odengi,site:mkassa,pos:odengi
 | `POST` | `/api/v1/webhooks/odengi` | Принять callback/result_url от О!Деньги |
 | `GET` | `/api/v1/integration` | Проверить, какой `integration_name` распознан по ключу |
 | `GET` | `/api/v1/local/transactions/{transaction_id}` | Посмотреть сохраненное локальное состояние |
+| `GET` | `/api/v1/local/transactions/{transaction_id}/tiger-event-preview` | Посмотреть JSON события, которое будет отправлено в Tiger после оплаты |
 | `GET` | `/api/v1/local/webhooks` | Посмотреть последние webhook-события |
 | `GET` | `/api/v1/local/access-events` | Посмотреть, какие интеграции обращались к сервису |
 

@@ -1033,6 +1033,24 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
         return item
 
+    @admin_router.get(
+        "/local/transactions/{transaction_id}/tiger-event-preview",
+        tags=["local"],
+        summary="Preview Tiger payment event",
+        description=(
+            "Builds the paid-payment event that can later be delivered to the Windows "
+            "Tiger integration service. It does not send anything to Tiger."
+        ),
+    )
+    async def local_transaction_tiger_event_preview(
+        request: Request,
+        transaction_id: str,
+    ) -> dict:
+        item = storage(request).get_transaction(transaction_id)
+        if item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+        return build_tiger_payment_event_preview(item)
+
     @admin_router.put(
         "/local/transactions/{transaction_id}/refresh",
         response_model=Transaction,
@@ -1290,6 +1308,60 @@ def build_invoice_qr_metadata(
     if payload.invoice_number:
         metadata["invoice_number"] = payload.invoice_number
     return metadata
+
+
+def build_tiger_payment_event_preview(transaction: dict) -> dict[str, object]:
+    if transaction.get("status") != "paid":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only paid transactions can be sent to Tiger",
+        )
+
+    metadata = transaction.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    invoice_id = transaction.get("external_invoice_id") or metadata.get("invoice_id")
+    if not isinstance(invoice_id, str) or not invoice_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Transaction does not have metadata.invoice_id",
+        )
+    invoice_id = invoice_id.strip()
+
+    raw_payload = transaction.get("raw_payload")
+    if not isinstance(raw_payload, dict):
+        raw_payload = {}
+
+    provider = str(transaction.get("provider") or "unknown")
+    provider_payment_id = (
+        raw_payload.get("provider_transaction_id")
+        or raw_payload.get("invoice_id")
+        or raw_payload.get("id")
+        or transaction.get("id")
+    )
+    provider_payment_id = str(provider_payment_id)
+    amount_tyiyn = transaction.get("amount")
+    amount = amount_tyiyn / 100 if isinstance(amount_tyiyn, int) else None
+    invoice_number = metadata.get("invoice_number")
+
+    event: dict[str, object] = {
+        "externalPaymentId": f"{provider}:{provider_payment_id}",
+        "gatewayTransactionId": str(transaction["id"]),
+        "provider": provider,
+        "providerPaymentId": provider_payment_id,
+        "invoiceId": invoice_id,
+        "invoiceNumber": invoice_number,
+        "paidAt": transaction.get("paid_at") or raw_payload.get("paid_at"),
+        "amountTyiyn": amount_tyiyn,
+        "amount": amount,
+        "currency": metadata.get("currency") or raw_payload.get("currency") or "KGS",
+        "clientCode": metadata.get("client_code") or metadata.get("payer_code"),
+        "clientName": metadata.get("client_name") or metadata.get("payer_full_name"),
+        "paymentMethod": transaction.get("transaction_type") or "qr",
+        "description": f"QR payment for {invoice_number or invoice_id}",
+    }
+    return {key: value for key, value in event.items() if value is not None}
 
 
 def render_qr_png(data: str) -> StreamingResponse:

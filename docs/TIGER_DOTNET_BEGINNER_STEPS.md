@@ -6,6 +6,15 @@ you do not know C# or .NET yet.
 The first goal is not to build the full integration. The first goal is only to
 prove that the Tiger server can be reached through `LObjects.dll`.
 
+Current verified server facts:
+
+- Tiger folder: `C:\LOGO\TIGER3ENT\`
+- COM ProgID: `UnityObjects.UnityApplication`
+- Logo Objects version: `Logo Objects 030700`
+- Working login flow: `Connect()` -> `UserLogin(user, password)` ->
+  `CompanyLogin(126)`
+- Verified firm/period after login: firm `126`, period `1`
+
 ## What We Are Building
 
 Final architecture:
@@ -27,7 +36,9 @@ installed.
 Before writing any real integration, we must run this tiny test:
 
 ```text
-UnityApplication.Connect(username, password, firmNo, periodNo)
+UnityApplication.Connect()
+UnityApplication.UserLogin(username, password)
+UnityApplication.CompanyLogin(firmNo)
 ```
 
 If this fails, stop. The problem is in Logo licensing, DLL registration,
@@ -166,8 +177,7 @@ namespace LogoTigerSmokeTest
         {
             var username = "LOGO_USER";
             var password = "LOGO_PASSWORD";
-            var firmNo = 1;
-            var periodNo = 1;
+            var firmNo = 126;
 
             UnityApplication logoApp = null;
 
@@ -176,9 +186,11 @@ namespace LogoTigerSmokeTest
                 logoApp = new UnityApplication();
 
                 Console.WriteLine("Connecting to Logo Tiger...");
-                var result = logoApp.Connect(username, password, firmNo, periodNo);
+                var connected = logoApp.Connect();
+                var userLoggedIn = logoApp.UserLogin(username, password);
+                var companyLoggedIn = logoApp.CompanyLogin(firmNo);
 
-                if (result == 0)
+                if (connected && userLoggedIn && companyLoggedIn)
                 {
                     Console.WriteLine("SUCCESS: Connected to Logo Tiger.");
                     Console.WriteLine("LoggedIn: " + logoApp.LoggedIn);
@@ -188,7 +200,10 @@ namespace LogoTigerSmokeTest
                 }
                 else
                 {
-                    Console.WriteLine("FAILED: Connect returned " + result);
+                    Console.WriteLine("FAILED:");
+                    Console.WriteLine("Connect: " + connected);
+                    Console.WriteLine("UserLogin: " + userLoggedIn);
+                    Console.WriteLine("CompanyLogin: " + companyLoggedIn);
                     Console.WriteLine(logoApp.GetLastErrorString());
                 }
             }
@@ -201,6 +216,8 @@ namespace LogoTigerSmokeTest
             {
                 try
                 {
+                    logoApp?.CompanyLogout();
+                    logoApp?.UserLogout();
                     logoApp?.Disconnect();
                 }
                 catch
@@ -221,8 +238,7 @@ Change only these values first:
 ```csharp
 var username = "LOGO_USER";
 var password = "LOGO_PASSWORD";
-var firmNo = 1;
-var periodNo = 1;
+var firmNo = 126;
 ```
 
 ## Success Result
@@ -233,7 +249,7 @@ Good result:
 SUCCESS: Connected to Logo Tiger.
 LoggedIn: True
 CompanyLoggedIn: True
-CurrentFirm: 1
+CurrentFirm: 126
 CurrentPeriod: 1
 ```
 
@@ -249,18 +265,18 @@ Likely causes:
 - `REGISTER.BAT` was not run as Administrator.
 - Wrong 32-bit / 64-bit registration.
 
-### Connect fails
+### Login flow fails
 
 Likely causes:
 
 - Wrong Logo username/password.
 - Wrong `firmNo`.
-- Wrong `periodNo`.
+- Wrong active `periodNo`.
 - User has no permission.
 - Logo Objects license is missing or inactive.
 - Logo/Tiger services are not running.
 
-### PowerShell COM Works But Connect Fails
+### PowerShell COM Works But Login Fails
 
 This only proves the COM object exists. It does not prove the Logo user, license,
 firm, or period are valid.
@@ -308,7 +324,7 @@ Send this to the Logo/Tiger implementer:
 
 ## After Smoke Test Succeeds
 
-Only after `Connect()` succeeds:
+Only after `Connect()`, `UserLogin()`, and `CompanyLogin()` succeed:
 
 1. Ask implementer which Tiger document type to create.
 2. If there is no test database, do not create anything from code yet.

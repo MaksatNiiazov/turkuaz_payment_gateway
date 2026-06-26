@@ -883,6 +883,85 @@ def test_webhook_is_idempotent_and_does_not_require_integration_key(tmp_path: Pa
     assert local.json()["status"] == "paid"
 
 
+def test_tiger_event_preview_builds_paid_payment_payload(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    app = create_app(
+        settings=make_settings(db_path),
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(db_path),
+    )
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    with TestClient(app) as client:
+        webhook = client.post(
+            "/api/v1/webhooks/mkassa",
+            json={
+                "id": "MKSA-TIGER-1",
+                "status": "paid",
+                "amount": "1500000",
+                "paid_at": "2026-06-24T10:30:00+06:00",
+                "metadata": {
+                    "invoice_id": invoice_id,
+                    "invoice_number": "TIGER-FACTURE-1001",
+                    "client_code": "CARI.001",
+                },
+            },
+        )
+        preview = client.get(
+            "/api/v1/local/transactions/MKSA-TIGER-1/tiger-event-preview",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert webhook.status_code == 200
+    assert preview.status_code == 200
+    assert preview.json() == {
+        "externalPaymentId": "mkassa:MKSA-TIGER-1",
+        "gatewayTransactionId": "MKSA-TIGER-1",
+        "provider": "mkassa",
+        "providerPaymentId": "MKSA-TIGER-1",
+        "invoiceId": invoice_id,
+        "invoiceNumber": "TIGER-FACTURE-1001",
+        "paidAt": "2026-06-24T10:30:00+06:00",
+        "amountTyiyn": 1500000,
+        "amount": 15000.0,
+        "currency": "KGS",
+        "clientCode": "CARI.001",
+        "paymentMethod": "qr",
+        "description": "QR payment for TIGER-FACTURE-1001",
+    }
+
+
+def test_tiger_event_preview_rejects_unpaid_transaction(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    store.initialize()
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    store.upsert_transaction(
+        transaction_id="MKSA-WAITING",
+        status="waiting",
+        transaction_type="qr",
+        amount=100,
+        external_invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id},
+        raw_payload={"id": "MKSA-WAITING"},
+        provider="mkassa",
+    )
+    app = create_app(
+        settings=make_settings(db_path),
+        client=FakeMKassaClient(),
+        store=store,
+    )
+
+    with TestClient(app) as client:
+        preview = client.get(
+            "/api/v1/local/transactions/MKSA-WAITING/tiger-event-preview",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert preview.status_code == 409
+    assert preview.json()["detail"] == "Only paid transactions can be sent to Tiger"
+
+
 def test_paid_webhook_cancels_other_active_transaction_for_same_invoice(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     store = SQLitePaymentStore(db_path)
