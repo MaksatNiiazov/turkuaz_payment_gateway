@@ -183,7 +183,7 @@ TigerIntegrationWorker/
 - `GET /tiger/version`
 - `POST /tiger/test-login`
 - `GET /tiger/clients/sample`
-- `POST /api/payments` только в `DryRun=true`
+- `POST /api/invoices/paid` только в `DryRun=true`
 
 Worker пока ничего не создает в Tiger. Он нужен для безопасного smoke test и
 будущего HTTP-триггера из PaymentGateway.

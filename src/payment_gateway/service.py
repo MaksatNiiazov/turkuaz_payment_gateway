@@ -171,6 +171,8 @@ class PaymentService:
         if not isinstance(external_invoice_id, str) or not external_invoice_id.strip():
             return
 
+        self.store.upsert_tiger_invoice_export(build_tiger_invoice_event(paid_transaction))
+
         related_transactions = self.store.list_invoice_transactions_for_cancel(
             external_invoice_id=external_invoice_id,
             exclude_transaction_id=transaction_id,
@@ -208,3 +210,53 @@ class PaymentService:
         if provider_transaction_id is None:
             return transaction_id
         return str(provider_transaction_id)
+
+
+def build_tiger_invoice_event(transaction: dict) -> dict[str, object]:
+    metadata = transaction.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    invoice_id = transaction.get("external_invoice_id") or metadata.get("invoice_id")
+    if not isinstance(invoice_id, str) or not invoice_id.strip():
+        raise ValueError("Transaction does not have metadata.invoice_id")
+    invoice_id = invoice_id.strip()
+
+    raw_payload = transaction.get("raw_payload")
+    if not isinstance(raw_payload, dict):
+        raw_payload = {}
+
+    provider = str(transaction.get("provider") or "unknown")
+    provider_payment_id = (
+        raw_payload.get("provider_transaction_id")
+        or raw_payload.get("invoice_id")
+        or raw_payload.get("id")
+        or transaction.get("id")
+    )
+    amount_tyiyn = transaction.get("amount")
+    amount = amount_tyiyn / 100 if isinstance(amount_tyiyn, int) else None
+    invoice_number = metadata.get("invoice_number")
+    target_bank_code = (
+        metadata.get("tiger_bank_code")
+        or metadata.get("print_qr_code")
+        or provider.upper()
+    )
+
+    event: dict[str, object] = {
+        "invoiceId": invoice_id,
+        "invoiceNumber": invoice_number,
+        "paidTransactionId": str(transaction["id"]),
+        "paidProvider": provider,
+        "providerPaymentId": str(provider_payment_id),
+        "targetBankCode": str(target_bank_code).upper(),
+        "targetBankAccountCode": metadata.get("tiger_bank_account_code"),
+        "paidAt": transaction.get("paid_at") or raw_payload.get("paid_at"),
+        "amountTyiyn": amount_tyiyn,
+        "amount": amount,
+        "currency": metadata.get("currency") or raw_payload.get("currency") or "KGS",
+        "clientCode": metadata.get("client_code") or metadata.get("payer_code"),
+        "clientName": metadata.get("client_name") or metadata.get("payer_full_name"),
+        "paymentMethod": transaction.get("transaction_type") or "qr",
+        "description": f"QR payment for {invoice_number or invoice_id}",
+    }
+    return {key: value for key, value in event.items() if value is not None}

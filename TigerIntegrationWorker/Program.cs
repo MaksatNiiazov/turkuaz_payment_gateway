@@ -28,9 +28,9 @@ app.MapGet("/tiger/clients/sample", (LogoObjectsClient logo) =>
     return result.Success ? Results.Ok(result) : Results.Problem(result.Error);
 }).RequireIntegrationKey();
 
-app.MapPost("/api/payments", (PaymentPaidEvent payment, LogoObjectsClient logo) =>
+app.MapPost("/api/invoices/paid", (InvoicePaidEvent invoice, LogoObjectsClient logo) =>
 {
-    var result = logo.AcceptPaymentDryRun(payment);
+    var result = logo.AcceptInvoicePaidDryRun(invoice);
     return result.Success ? Results.Accepted(null, result) : Results.Problem(result.Error);
 }).RequireIntegrationKey();
 
@@ -180,24 +180,24 @@ public sealed class LogoObjectsClient
         }
     }
 
-    public PaymentAcceptResult AcceptPaymentDryRun(PaymentPaidEvent payment)
+    public InvoiceAcceptResult AcceptInvoicePaidDryRun(InvoicePaidEvent invoice)
     {
         if (!_options.DryRun)
         {
-            return new PaymentAcceptResult(false, payment.ExternalPaymentId, true, "Write mode is not implemented yet.");
+            return new InvoiceAcceptResult(false, invoice.InvoiceId, true, "Write mode is not implemented yet.");
         }
 
-        if (string.IsNullOrWhiteSpace(payment.ExternalPaymentId))
+        if (string.IsNullOrWhiteSpace(invoice.InvoiceId))
         {
-            return new PaymentAcceptResult(false, payment.ExternalPaymentId, true, "externalPaymentId is required.");
+            return new InvoiceAcceptResult(false, invoice.InvoiceId, true, "invoiceId is required.");
         }
 
-        if (payment.Amount <= 0)
+        if (invoice.Amount <= 0)
         {
-            return new PaymentAcceptResult(false, payment.ExternalPaymentId, true, "amount must be greater than zero.");
+            return new InvoiceAcceptResult(false, invoice.InvoiceId, true, "amount must be greater than zero.");
         }
 
-        return new PaymentAcceptResult(true, payment.ExternalPaymentId, true, null);
+        return new InvoiceAcceptResult(true, invoice.InvoiceId, true, null);
     }
 
     private dynamic CreateUnityApplication()
@@ -301,13 +301,14 @@ public sealed record TigerClientsResult(bool Success, IReadOnlyList<TigerClientR
 
 public sealed record TigerClientRow(int LogicalRef, string Code, string Name);
 
-public sealed record PaymentPaidEvent(
-    string ExternalPaymentId,
-    string GatewayTransactionId,
-    string Provider,
-    string? ProviderPaymentId,
+public sealed record InvoicePaidEvent(
     string InvoiceId,
     string? InvoiceNumber,
+    string PaidTransactionId,
+    string PaidProvider,
+    string? ProviderPaymentId,
+    string? TargetBankCode,
+    string? TargetBankAccountCode,
     DateTimeOffset PaidAt,
     long AmountTyiyn,
     decimal Amount,
@@ -317,4 +318,4 @@ public sealed record PaymentPaidEvent(
     string? PaymentMethod,
     string? Description);
 
-public sealed record PaymentAcceptResult(bool Success, string ExternalPaymentId, bool DryRun, string? Error);
+public sealed record InvoiceAcceptResult(bool Success, string InvoiceId, bool DryRun, string? Error);

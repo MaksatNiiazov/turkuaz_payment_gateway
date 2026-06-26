@@ -130,6 +130,32 @@ print_qr_codes = Table(
     Column("updated_at", String(64), nullable=False),
 )
 
+tiger_invoice_exports = Table(
+    "tiger_invoice_exports",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("invoice_id", String(150), nullable=False),
+    Column("invoice_number", String(150)),
+    Column("paid_transaction_id", String(128), nullable=False),
+    Column("paid_provider", String(32), nullable=False),
+    Column("provider_payment_id", String(150)),
+    Column("target_bank_code", String(64)),
+    Column("target_bank_account_code", String(64)),
+    Column("amount", Integer),
+    Column("currency", String(16)),
+    Column("status", String(32), nullable=False, default="pending"),
+    Column("event_payload", Text, nullable=False),
+    Column("tiger_logical_ref", String(128)),
+    Column("tiger_fiche_no", String(128)),
+    Column("error_message", Text),
+    Column("attempt_count", Integer, nullable=False, default=0),
+    Column("last_attempt_at", String(64)),
+    Column("exported_at", String(64)),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    UniqueConstraint("invoice_id", name="uq_tiger_invoice_exports_invoice_id"),
+)
+
 Index("idx_transactions_provider_status", transactions.c.provider, transactions.c.status)
 Index("idx_transactions_external_invoice_id", transactions.c.external_invoice_id)
 Index("idx_transactions_updated_at", transactions.c.updated_at)
@@ -138,6 +164,8 @@ Index("idx_webhook_events_received_at", webhook_events.c.received_at)
 Index("idx_api_access_events_integration_name", api_access_events.c.integration_name)
 Index("idx_api_access_events_created_at", api_access_events.c.created_at)
 Index("idx_print_qr_codes_enabled_sort", print_qr_codes.c.enabled, print_qr_codes.c.sort_order)
+Index("idx_tiger_invoice_exports_status", tiger_invoice_exports.c.status)
+Index("idx_tiger_invoice_exports_updated_at", tiger_invoice_exports.c.updated_at)
 
 
 class PaymentStore:
@@ -419,6 +447,169 @@ class PaymentStore:
                 )
         return self.list_print_qr_codes()
 
+    def upsert_tiger_invoice_export(self, event: dict[str, Any]) -> dict[str, Any]:
+        invoice_id = self._clean_string(event.get("invoiceId"))
+        paid_transaction_id = self._clean_string(event.get("paidTransactionId"))
+        paid_provider = self._clean_string(event.get("paidProvider"))
+        if not invoice_id:
+            raise ValueError("invoiceId is required")
+        if not paid_transaction_id:
+            raise ValueError("paidTransactionId is required")
+        if not paid_provider:
+            raise ValueError("paidProvider is required")
+
+        now = self._now()
+        values = {
+            "invoice_id": invoice_id,
+            "invoice_number": self._clean_string(event.get("invoiceNumber")),
+            "paid_transaction_id": paid_transaction_id,
+            "paid_provider": paid_provider,
+            "provider_payment_id": self._clean_string(event.get("providerPaymentId")),
+            "target_bank_code": self._clean_string(event.get("targetBankCode")),
+            "target_bank_account_code": self._clean_string(event.get("targetBankAccountCode")),
+            "amount": self._parse_int(event.get("amountTyiyn")),
+            "currency": self._clean_string(event.get("currency")),
+            "event_payload": self._json_dumps(event),
+            "updated_at": now,
+        }
+        insert_values = {
+            **values,
+            "status": "pending",
+            "attempt_count": 0,
+            "created_at": now,
+        }
+
+        with self.engine.begin() as connection:
+            existing = connection.execute(
+                select(tiger_invoice_exports).where(
+                    tiger_invoice_exports.c.invoice_id == invoice_id
+                )
+            ).mappings().first()
+            if existing is None:
+                try:
+                    result = connection.execute(
+                        tiger_invoice_exports.insert().values(**insert_values)
+                    )
+                    event_id = result.inserted_primary_key[0]
+                except IntegrityError:
+                    existing = connection.execute(
+                        select(tiger_invoice_exports).where(
+                            tiger_invoice_exports.c.invoice_id == invoice_id
+                        )
+                    ).mappings().first()
+                else:
+                    row = connection.execute(
+                        select(tiger_invoice_exports).where(tiger_invoice_exports.c.id == event_id)
+                    ).mappings().one()
+                    return self._tiger_invoice_export_row_to_dict(row)
+
+            if existing is None:
+                raise RuntimeError("Failed to create or load Tiger invoice export")
+
+            if existing["status"] == "success":
+                return self._tiger_invoice_export_row_to_dict(existing)
+
+            connection.execute(
+                tiger_invoice_exports.update()
+                .where(tiger_invoice_exports.c.id == existing["id"])
+                .values(**values)
+            )
+            row = connection.execute(
+                select(tiger_invoice_exports).where(tiger_invoice_exports.c.id == existing["id"])
+            ).mappings().one()
+            return self._tiger_invoice_export_row_to_dict(row)
+
+    def list_tiger_invoice_exports(
+        self,
+        *,
+        limit: int = 20,
+        statuses: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        capped_limit = min(max(limit, 1), 500)
+        query = (
+            select(tiger_invoice_exports)
+            .order_by(tiger_invoice_exports.c.created_at, tiger_invoice_exports.c.id)
+            .limit(capped_limit)
+        )
+        if statuses:
+            query = query.where(tiger_invoice_exports.c.status.in_(statuses))
+
+        with self.engine.begin() as connection:
+            rows = connection.execute(query).mappings()
+            return [self._tiger_invoice_export_row_to_dict(row) for row in rows]
+
+    def get_tiger_invoice_export(self, event_id: int) -> dict[str, Any] | None:
+        with self.engine.begin() as connection:
+            row = connection.execute(
+                select(tiger_invoice_exports).where(tiger_invoice_exports.c.id == event_id)
+            ).mappings().first()
+        return self._tiger_invoice_export_row_to_dict(row) if row else None
+
+    def update_tiger_invoice_export_result(
+        self,
+        event_id: int,
+        *,
+        status: str,
+        tiger_logical_ref: str | None = None,
+        tiger_fiche_no: str | None = None,
+        error_message: str | None = None,
+    ) -> dict[str, Any] | None:
+        if status not in {"processing", "success", "error", "skipped"}:
+            raise ValueError("Unsupported Tiger export status")
+
+        now = self._now()
+        values: dict[str, Any] = {
+            "status": status,
+            "updated_at": now,
+            "last_attempt_at": now,
+        }
+        if status in {"success", "error"}:
+            values["attempt_count"] = tiger_invoice_exports.c.attempt_count + 1
+        if status == "success":
+            values["exported_at"] = now
+            values["error_message"] = None
+        if tiger_logical_ref is not None:
+            values["tiger_logical_ref"] = self._clean_string(tiger_logical_ref)
+        if tiger_fiche_no is not None:
+            values["tiger_fiche_no"] = self._clean_string(tiger_fiche_no)
+        if error_message is not None or status == "error":
+            values["error_message"] = self._clean_string(error_message)
+
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                tiger_invoice_exports.update()
+                .where(tiger_invoice_exports.c.id == event_id)
+                .values(**values)
+            )
+            if result.rowcount == 0:
+                return None
+            row = connection.execute(
+                select(tiger_invoice_exports).where(tiger_invoice_exports.c.id == event_id)
+            ).mappings().one()
+            return self._tiger_invoice_export_row_to_dict(row)
+
+    def reset_tiger_invoice_export(self, event_id: int) -> dict[str, Any] | None:
+        now = self._now()
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                tiger_invoice_exports.update()
+                .where(tiger_invoice_exports.c.id == event_id)
+                .values(
+                    status="pending",
+                    tiger_logical_ref=None,
+                    tiger_fiche_no=None,
+                    error_message=None,
+                    exported_at=None,
+                    updated_at=now,
+                )
+            )
+            if result.rowcount == 0:
+                return None
+            row = connection.execute(
+                select(tiger_invoice_exports).where(tiger_invoice_exports.c.id == event_id)
+            ).mappings().one()
+            return self._tiger_invoice_export_row_to_dict(row)
+
     def ensure_default_print_qr_codes(self) -> None:
         with self.engine.begin() as connection:
             existing_codes = {
@@ -563,6 +754,22 @@ class PaymentStore:
                     "ON print_qr_codes (enabled, sort_order)"
                 )
 
+            tiger_export_columns = {
+                row[1]
+                for row in connection.exec_driver_sql(
+                    "PRAGMA table_info(tiger_invoice_exports)"
+                ).fetchall()
+            }
+            if tiger_export_columns:
+                connection.exec_driver_sql(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_tiger_invoice_exports_invoice_id "
+                    "ON tiger_invoice_exports (invoice_id)"
+                )
+                connection.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS idx_tiger_invoice_exports_status "
+                    "ON tiger_invoice_exports (status)"
+                )
+
     @staticmethod
     def _create_engine(database_url: str) -> Engine:
         connect_args: dict[str, Any] = {}
@@ -595,6 +802,12 @@ class PaymentStore:
         data["enabled"] = bool(data.get("enabled"))
         data.pop("created_at", None)
         data.pop("updated_at", None)
+        return data
+
+    @staticmethod
+    def _tiger_invoice_export_row_to_dict(row: Any) -> dict[str, Any]:
+        data = dict(row)
+        data["event_payload"] = PaymentStore._json_loads(data.get("event_payload")) or {}
         return data
 
     @staticmethod

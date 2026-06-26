@@ -77,29 +77,38 @@ No document write was tested.
 
 Detailed progress log: [TIGER_PROGRESS_LOG.md](TIGER_PROGRESS_LOG.md).
 
-## Proposed Contract To Tiger Integration API
+## Proposed Contract To Tiger Integration
 
-When a payment is confirmed as paid, PaymentGateway should send one payment event
-to the Windows Tiger Integration API.
+PaymentGateway can create multiple bank transactions for one 1C/Tiger invoice
+because the same invoice may be payable through several banks. Tiger must not
+receive every bank transaction. Tiger should receive one invoice-level event only
+after the invoice is actually paid by one provider.
 
-Recommended endpoint on the Windows side:
+The winning paid provider still matters because the payment must land on the
+correct Tiger bank account. Therefore the event contains both:
+
+- invoice-level fields: `invoiceId`, `invoiceNumber`, `amount`, `paidAt`;
+- winning-payment fields: `paidTransactionId`, `paidProvider`,
+  `providerPaymentId`, `targetBankCode`, `targetBankAccountCode`.
+
+Recommended pull endpoint on PaymentGateway:
 
 ```http
-POST /api/payments
-X-Integration-Key: <server-to-server-secret>
-Content-Type: application/json
+GET /api/v1/local/tiger/invoice-events/pending?limit=20
+X-Integration-Key: <tiger-worker-secret>
 ```
 
-Recommended payload:
+Recommended event payload:
 
 ```json
 {
-  "externalPaymentId": "odengi:172030403548",
-  "gatewayTransactionId": "550e8400-e29b-41d4-a716-446655440000",
-  "provider": "odengi",
-  "providerPaymentId": "172030403548",
   "invoiceId": "550e8400-e29b-41d4-a716-446655440000",
   "invoiceNumber": "TIGER-FACTURE-1001",
+  "paidTransactionId": "7c661926-34e0-43bb-b5e6-590e88a03b9a",
+  "paidProvider": "odengi",
+  "providerPaymentId": "172030403548",
+  "targetBankCode": "OBANK",
+  "targetBankAccountCode": "OBANK_KGS",
   "paidAt": "2026-06-19T10:30:00+06:00",
   "amountTyiyn": 1500000,
   "amount": 15000.0,
@@ -114,51 +123,56 @@ Recommended payload:
 Idempotency rule:
 
 ```text
-externalPaymentId = provider + ":" + providerPaymentId
+invoiceId is the business idempotency key for Tiger export
 ```
 
-If `providerPaymentId` is missing, use:
+PaymentGateway should create at most one successful Tiger export per `invoiceId`.
+The paid transaction details are kept as evidence of which bank actually paid
+the invoice.
 
-```text
-externalPaymentId = provider + ":" + gatewayTransactionId
+Recommended result endpoint on PaymentGateway:
+
+```http
+POST /api/v1/local/tiger/invoice-events/{event_id}/result
+X-Integration-Key: <tiger-worker-secret>
 ```
 
-The Tiger side must reject or return the existing result for repeated
-`externalPaymentId` values. It must not create the same Tiger payment document
-twice.
+The result should contain `success` / `error`, and on success the Tiger
+document identifiers such as `tigerLogicalRef` and `tigerFicheNo`.
 
 ## What The Tiger Windows Service Should Do
 
-The Windows service should:
+The Windows worker should:
 
-1. Accept the HTTP request.
+1. Poll PaymentGateway for pending paid-invoice events.
 2. Validate the server-to-server key.
-3. Save the incoming payment to its own table first.
-4. Return quickly to PaymentGateway.
-5. Let a worker process queued payments.
-6. Connect to Logo via `UnityObjects`.
-7. Find the client and invoice/order by configured fields.
-8. Create the agreed payment document.
-9. Save the Logo document number.
-10. Mark the incoming payment as `Success` or `Error`.
-11. Retry temporary errors with a retry limit.
+3. Process only invoice events whose invoice is marked paid.
+4. Connect to Logo via `UnityObjects`.
+5. Use `targetBankCode` / `targetBankAccountCode` to choose the correct Tiger
+   bank account.
+6. Find the client and invoice/order by configured fields.
+7. Create the agreed payment document.
+8. Report `Success` or `Error` back to PaymentGateway.
+9. Retry temporary errors with a retry limit.
 
 Recommended incoming table:
 
 ```text
-IncomingPayments
+TigerInvoiceExports
 - Id
-- ExternalPaymentId
-- GatewayTransactionId
-- Provider
-- ProviderPaymentId
 - InvoiceId
 - InvoiceNumber
+- PaidTransactionId
+- PaidProvider
+- ProviderPaymentId
+- TargetBankCode
+- TargetBankAccountCode
 - ClientCode
 - Amount
 - Currency
-- Status: New / Processing / Success / Error
+- Status: Pending / Processing / Success / Error / Skipped
 - LogoDocumentNumber
+- LogoLogicalRef
 - ErrorMessage
 - RetryCount
 - CreatedAt
@@ -184,8 +198,8 @@ implementer or accountant:
 11. How should external payment methods map to Tiger accounts?
 12. Is there a test Tiger database for first writes?
 
-Until these are known, PaymentGateway can prepare and deliver payment events, but
-the Tiger service cannot safely create accounting documents.
+Until these are known, PaymentGateway can prepare paid-invoice export events,
+but the Tiger service cannot safely create accounting documents.
 
 ## Implementation Phases
 
@@ -202,27 +216,27 @@ On the Windows/Tiger server:
 If `Connect()` does not work, stop here and fix Logo licensing, registration,
 bitness, credentials, firm, or period.
 
-### Phase 2 - Build Tiger Integration API
+### Phase 2 - Build Tiger Polling Worker
 
-Build an ASP.NET API on the Windows server:
+Build a Windows worker on the Tiger server:
 
-- `POST /api/payments` to accept paid payment events.
-- `GET /api/payments/{externalPaymentId}` for diagnostics.
-- Local table for queued incoming payments.
-- Worker service that writes to Logo through LObjects.
+- Poll PaymentGateway for pending paid-invoice export events.
+- Process only events whose invoice is marked paid.
+- Use `paidProvider` and `targetBankAccountCode` to choose the correct Tiger bank.
+- Report success/error back to PaymentGateway.
+- Keep `DryRun=true` until document mapping is approved.
 
 ### Phase 3 - Wire PaymentGateway
 
-After the Windows endpoint is available, add optional PaymentGateway settings:
+After the Windows worker is available, add optional PaymentGateway settings:
 
 ```env
-TIGER_INTEGRATION_URL=https://tiger-integration.local/api/payments
-TIGER_INTEGRATION_KEY=<server-to-server-secret>
-TIGER_INTEGRATION_ENABLED=true
+TIGER_EXPORT_POLLING_ENABLED=true
+TIGER_WORKER_INTEGRATION_KEY=<server-to-server-secret>
 ```
 
-PaymentGateway should send to Tiger only when a local transaction status becomes
-`paid`.
+PaymentGateway should expose only invoice-level events for invoices that are
+actually paid. It must not expose every bank transaction for the same invoice.
 
 Before outbound delivery is implemented, verify the local event shape with:
 

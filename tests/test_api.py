@@ -904,6 +904,7 @@ def test_tiger_event_preview_builds_paid_payment_payload(tmp_path: Path) -> None
                     "invoice_id": invoice_id,
                     "invoice_number": "TIGER-FACTURE-1001",
                     "client_code": "CARI.001",
+                    "tiger_bank_account_code": "MKASSA_KGS",
                 },
             },
         )
@@ -915,12 +916,13 @@ def test_tiger_event_preview_builds_paid_payment_payload(tmp_path: Path) -> None
     assert webhook.status_code == 200
     assert preview.status_code == 200
     assert preview.json() == {
-        "externalPaymentId": "mkassa:MKSA-TIGER-1",
-        "gatewayTransactionId": "MKSA-TIGER-1",
-        "provider": "mkassa",
-        "providerPaymentId": "MKSA-TIGER-1",
         "invoiceId": invoice_id,
         "invoiceNumber": "TIGER-FACTURE-1001",
+        "paidTransactionId": "MKSA-TIGER-1",
+        "paidProvider": "mkassa",
+        "providerPaymentId": "MKSA-TIGER-1",
+        "targetBankCode": "MKASSA",
+        "targetBankAccountCode": "MKASSA_KGS",
         "paidAt": "2026-06-24T10:30:00+06:00",
         "amountTyiyn": 1500000,
         "amount": 15000.0,
@@ -929,6 +931,101 @@ def test_tiger_event_preview_builds_paid_payment_payload(tmp_path: Path) -> None
         "paymentMethod": "qr",
         "description": "QR payment for TIGER-FACTURE-1001",
     }
+
+
+def test_paid_webhook_creates_tiger_invoice_export_event(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    app = create_app(
+        settings=make_settings(db_path),
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(db_path),
+    )
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    with TestClient(app) as client:
+        webhook = client.post(
+            "/api/v1/webhooks/mkassa",
+            json={
+                "id": "MKSA-TIGER-QUEUE-1",
+                "status": "paid",
+                "amount": "1500000",
+                "paid_at": "2026-06-24T10:30:00+06:00",
+                "metadata": {
+                    "invoice_id": invoice_id,
+                    "invoice_number": "TIGER-FACTURE-1001",
+                    "client_code": "CARI.001",
+                    "tiger_bank_account_code": "MKASSA_KGS",
+                },
+            },
+        )
+        pending = client.get(
+            "/api/v1/local/tiger/invoice-events/pending",
+            headers={"X-Integration-Key": "erp-secret"},
+        )
+
+    assert webhook.status_code == 200
+    assert pending.status_code == 200
+    events = pending.json()
+    assert len(events) == 1
+    assert events[0]["status"] == "pending"
+    assert events[0]["invoice_id"] == invoice_id
+    assert events[0]["paid_transaction_id"] == "MKSA-TIGER-QUEUE-1"
+    assert events[0]["paid_provider"] == "mkassa"
+    assert events[0]["target_bank_account_code"] == "MKASSA_KGS"
+    assert events[0]["event_payload"]["invoiceId"] == invoice_id
+
+
+def test_tiger_worker_can_report_success_and_admin_can_reset(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    app = create_app(
+        settings=make_settings(db_path),
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(db_path),
+    )
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    with TestClient(app) as client:
+        client.post(
+            "/api/v1/webhooks/mkassa",
+            json={
+                "id": "MKSA-TIGER-RESULT-1",
+                "status": "paid",
+                "amount": "1500000",
+                "metadata": {"invoice_id": invoice_id},
+            },
+        )
+        pending = client.get(
+            "/api/v1/local/tiger/invoice-events/pending",
+            headers={"X-Integration-Key": "erp-secret"},
+        )
+        event_id = pending.json()[0]["id"]
+        result = client.post(
+            f"/api/v1/local/tiger/invoice-events/{event_id}/result",
+            headers={"X-Integration-Key": "erp-secret"},
+            json={
+                "success": True,
+                "tiger_logical_ref": "12345",
+                "tiger_fiche_no": "BN-1001",
+            },
+        )
+        after_success = client.get(
+            "/api/v1/local/tiger/invoice-events/pending",
+            headers={"X-Integration-Key": "erp-secret"},
+        )
+        reset = client.post(
+            f"/api/v1/local/tiger/invoice-events/{event_id}/reset",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert result.status_code == 200
+    assert result.json()["status"] == "success"
+    assert result.json()["tiger_logical_ref"] == "12345"
+    assert result.json()["tiger_fiche_no"] == "BN-1001"
+    assert after_success.status_code == 200
+    assert after_success.json() == []
+    assert reset.status_code == 200
+    assert reset.json()["status"] == "pending"
+    assert reset.json()["tiger_logical_ref"] is None
 
 
 def test_tiger_event_preview_rejects_unpaid_transaction(tmp_path: Path) -> None:
@@ -959,7 +1056,7 @@ def test_tiger_event_preview_rejects_unpaid_transaction(tmp_path: Path) -> None:
         )
 
     assert preview.status_code == 409
-    assert preview.json()["detail"] == "Only paid transactions can be sent to Tiger"
+    assert preview.json()["detail"] == "Only paid invoice transactions can be exported to Tiger"
 
 
 def test_paid_webhook_cancels_other_active_transaction_for_same_invoice(tmp_path: Path) -> None:

@@ -340,12 +340,12 @@ Only after `Connect()`, `UserLogin()`, and `CompanyLogin()` succeed:
 The Windows service should have two separate steps:
 
 ```text
-POST /api/payments
-  -> validate key
-  -> save incoming event to local integration table
-  -> return quickly
+Polling worker
+  -> call PaymentGateway for paid invoice events
+  -> process one invoice-level event at a time
+  -> report success/error back to PaymentGateway
 
-Background worker
+Tiger write step
   -> if DRY_RUN=true, only validate and log what would be created
   -> if DRY_RUN=false, create Tiger document through LObjects
 ```
@@ -353,23 +353,26 @@ Background worker
 Required safety fields in the local integration table:
 
 ```text
-ExternalPaymentId
-GatewayTransactionId
 InvoiceId
 InvoiceNumber
-Provider
+PaidTransactionId
+PaidProvider
+ProviderPaymentId
+TargetBankCode
+TargetBankAccountCode
 Amount
-Status: New / DryRunValidated / Processing / Success / Error
+Status: Pending / DryRunValidated / Processing / Success / Error
 DryRun
 LogoDocumentNumber
+LogoLogicalRef
 ErrorMessage
 RetryCount
 CreatedAt
 ProcessedAt
 ```
 
-Never create a Tiger document if `ExternalPaymentId` already exists with
-`Success`.
+Never create a Tiger document if `InvoiceId` already has a successful Tiger
+export.
 
 Recommended first production run:
 
@@ -386,18 +389,20 @@ In dry-run mode the worker should:
 5. Disconnect.
 6. Not call `Post()`.
 
-## PaymentGateway Event Shape
+## PaymentGateway Invoice Event Shape
 
-PaymentGateway should later send this to the Windows service:
+PaymentGateway should later expose this to the Windows worker. It is one event
+per paid invoice, not one event per bank transaction.
 
 ```json
 {
-  "externalPaymentId": "odengi:172030403548",
-  "gatewayTransactionId": "550e8400-e29b-41d4-a716-446655440000",
-  "provider": "odengi",
-  "providerPaymentId": "172030403548",
   "invoiceId": "550e8400-e29b-41d4-a716-446655440000",
   "invoiceNumber": "TIGER-FACTURE-1001",
+  "paidTransactionId": "7c661926-34e0-43bb-b5e6-590e88a03b9a",
+  "paidProvider": "odengi",
+  "providerPaymentId": "172030403548",
+  "targetBankCode": "OBANK",
+  "targetBankAccountCode": "OBANK_KGS",
   "paidAt": "2026-06-23T10:30:00+06:00",
   "amountTyiyn": 1500000,
   "amount": 15000.0,
@@ -410,7 +415,8 @@ PaymentGateway should later send this to the Windows service:
 The idempotency key is:
 
 ```text
-externalPaymentId = provider + ":" + providerPaymentId
+invoiceId
 ```
 
-This prevents creating the same Tiger payment twice.
+`paidProvider` and `targetBankAccountCode` tell the worker which bank account in
+Tiger should receive the payment.

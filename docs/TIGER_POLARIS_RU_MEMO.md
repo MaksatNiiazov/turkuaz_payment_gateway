@@ -27,8 +27,8 @@ Recommended shape:
 
 ```text
 PaymentGateway
-  -> paid payment event over HTTP
-  -> Tiger Integration service on Windows
+  -> stores paid invoice export events
+  -> Tiger Integration worker polls over HTTPS
   -> Logo Tiger3 REST Service OR LObjects/UnityObjects
   -> Logo Tiger
 ```
@@ -39,7 +39,8 @@ Why:
 - It needs correct bitness, registration, Logo user, firm number and period.
 - PaymentGateway should stay a small HTTP payment adapter and not become a
   Windows COM host.
-- A separate Tiger-side service can queue, retry, log and protect writes.
+- A separate Tiger-side worker can poll, retry, log and protect writes without
+  exposing the Tiger server to inbound internet traffic.
 
 ## Option A: Use Logo Tiger3 REST Service
 
@@ -151,19 +152,20 @@ PaymentGateway already stores the key data:
 
 - `external_invoice_id` - stable 1C/Tiger document ID from `metadata.invoice_id`.
 - `invoice_number` - human-readable number from `metadata.invoice_number`.
-- `provider` - `mkassa` or `odengi`.
-- transaction ID / provider payment ID - idempotency key.
+- `provider` - the bank/provider that actually paid the invoice.
+- transaction ID / provider payment ID - evidence of the winning paid provider.
 
-Recommended event:
+Recommended paid-invoice event:
 
 ```json
 {
-  "externalPaymentId": "odengi:172030403548",
-  "gatewayTransactionId": "TIGER-ORDER-123",
-  "provider": "odengi",
-  "providerPaymentId": "172030403548",
   "invoiceId": "550e8400-e29b-41d4-a716-446655440000",
   "invoiceNumber": "TIGER-FACTURE-1001",
+  "paidTransactionId": "TIGER-ORDER-123",
+  "paidProvider": "odengi",
+  "providerPaymentId": "172030403548",
+  "targetBankCode": "OBANK",
+  "targetBankAccountCode": "OBANK_KGS",
   "paidAt": "2026-06-24T10:30:00+06:00",
   "amountTyiyn": 1500000,
   "amount": 15000.0,
@@ -177,17 +179,12 @@ Recommended event:
 Idempotency:
 
 ```text
-externalPaymentId = provider + ":" + providerPaymentId
-```
-
-If provider payment ID is missing:
-
-```text
-externalPaymentId = provider + ":" + gatewayTransactionId
+invoiceId
 ```
 
 The Tiger-side service must never create two Tiger documents for the same
-`externalPaymentId`.
+`invoiceId`. `paidProvider` / `targetBankAccountCode` decide which Tiger bank
+account receives the payment.
 
 ## Main Thing We Must Learn Before Continuing
 

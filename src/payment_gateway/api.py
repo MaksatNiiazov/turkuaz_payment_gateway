@@ -17,6 +17,7 @@ from payment_gateway.gateway import PaymentGateway
 from payment_gateway.models import (
     BranchListResponse,
     CancelResponse,
+    APIModel,
     DynamicQRCreate,
     DynamicQRResponse,
     InvoiceQRCodeBundleResponse,
@@ -46,8 +47,15 @@ from payment_gateway.providers.odengi import (
     ODengiProvider,
     ODengiTransportError,
 )
-from payment_gateway.service import PaymentService
+from payment_gateway.service import PaymentService, build_tiger_invoice_event
 from payment_gateway.store import PaymentStore
+
+
+class TigerInvoiceExportResult(APIModel):
+    success: bool
+    tiger_logical_ref: str | None = None
+    tiger_fiche_no: str | None = None
+    error_message: str | None = None
 
 
 integration_key_scheme = APIKeyHeader(
@@ -917,6 +925,49 @@ def create_app(
     async def current_integration(request: Request) -> dict[str, str]:
         return {"integration_name": request.state.integration_name}
 
+    @protected_router.get(
+        "/local/tiger/invoice-events/pending",
+        tags=["local"],
+        summary="List pending Tiger invoice export events",
+        description=(
+            "Used by the Tiger worker. Returns invoice-level events for invoices that "
+            "are paid and still need Tiger export or retry."
+        ),
+    )
+    async def tiger_pending_invoice_events(
+        request: Request,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    ) -> list[dict]:
+        return storage(request).list_tiger_invoice_exports(
+            limit=limit,
+            statuses={"pending", "error"},
+        )
+
+    @protected_router.post(
+        "/local/tiger/invoice-events/{event_id}/result",
+        tags=["local"],
+        summary="Save Tiger invoice export result",
+        description="Used by the Tiger worker to report success or error after processing.",
+    )
+    async def tiger_invoice_event_result(
+        request: Request,
+        event_id: int,
+        payload: TigerInvoiceExportResult,
+    ) -> dict:
+        item = storage(request).update_tiger_invoice_export_result(
+            event_id,
+            status="success" if payload.success else "error",
+            tiger_logical_ref=payload.tiger_logical_ref,
+            tiger_fiche_no=payload.tiger_fiche_no,
+            error_message=payload.error_message,
+        )
+        if item is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tiger invoice export event not found",
+            )
+        return item
+
     @protected_router.post(
         "/invoice/qr-codes",
         response_model=InvoiceQRCodeBundleResponse,
@@ -1036,10 +1087,10 @@ def create_app(
     @admin_router.get(
         "/local/transactions/{transaction_id}/tiger-event-preview",
         tags=["local"],
-        summary="Preview Tiger payment event",
+        summary="Preview Tiger paid-invoice export event",
         description=(
-            "Builds the paid-payment event that can later be delivered to the Windows "
-            "Tiger integration service. It does not send anything to Tiger."
+            "Builds the paid-invoice export event that can later be pulled by the "
+            "Windows Tiger integration worker. It does not send anything to Tiger."
         ),
     )
     async def local_transaction_tiger_event_preview(
@@ -1050,6 +1101,41 @@ def create_app(
         if item is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
         return build_tiger_payment_event_preview(item)
+
+    @admin_router.get(
+        "/local/tiger/invoice-events",
+        tags=["local"],
+        summary="List Tiger invoice export events",
+        description="Admin-only list of invoice-level Tiger export statuses.",
+    )
+    async def local_tiger_invoice_events(
+        request: Request,
+        limit: Annotated[int, Query(ge=1, le=500)] = 50,
+        status_filter: Annotated[
+            str | None,
+            Query(alias="status", description="Optional Tiger export status filter."),
+        ] = None,
+    ) -> list[dict]:
+        statuses = {status_filter} if status_filter else None
+        return storage(request).list_tiger_invoice_exports(limit=limit, statuses=statuses)
+
+    @admin_router.post(
+        "/local/tiger/invoice-events/{event_id}/reset",
+        tags=["local"],
+        summary="Reset Tiger invoice export event",
+        description=(
+            "Admin-only reset. Moves a Tiger export event back to pending so the "
+            "worker can retry it."
+        ),
+    )
+    async def reset_local_tiger_invoice_event(request: Request, event_id: int) -> dict:
+        item = storage(request).reset_tiger_invoice_export(event_id)
+        if item is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tiger invoice export event not found",
+            )
+        return item
 
     @admin_router.put(
         "/local/transactions/{transaction_id}/refresh",
@@ -1314,54 +1400,15 @@ def build_tiger_payment_event_preview(transaction: dict) -> dict[str, object]:
     if transaction.get("status") != "paid":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Only paid transactions can be sent to Tiger",
+            detail="Only paid invoice transactions can be exported to Tiger",
         )
-
-    metadata = transaction.get("metadata")
-    if not isinstance(metadata, dict):
-        metadata = {}
-
-    invoice_id = transaction.get("external_invoice_id") or metadata.get("invoice_id")
-    if not isinstance(invoice_id, str) or not invoice_id.strip():
+    try:
+        return build_tiger_invoice_event(transaction)
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Transaction does not have metadata.invoice_id",
-        )
-    invoice_id = invoice_id.strip()
-
-    raw_payload = transaction.get("raw_payload")
-    if not isinstance(raw_payload, dict):
-        raw_payload = {}
-
-    provider = str(transaction.get("provider") or "unknown")
-    provider_payment_id = (
-        raw_payload.get("provider_transaction_id")
-        or raw_payload.get("invoice_id")
-        or raw_payload.get("id")
-        or transaction.get("id")
-    )
-    provider_payment_id = str(provider_payment_id)
-    amount_tyiyn = transaction.get("amount")
-    amount = amount_tyiyn / 100 if isinstance(amount_tyiyn, int) else None
-    invoice_number = metadata.get("invoice_number")
-
-    event: dict[str, object] = {
-        "externalPaymentId": f"{provider}:{provider_payment_id}",
-        "gatewayTransactionId": str(transaction["id"]),
-        "provider": provider,
-        "providerPaymentId": provider_payment_id,
-        "invoiceId": invoice_id,
-        "invoiceNumber": invoice_number,
-        "paidAt": transaction.get("paid_at") or raw_payload.get("paid_at"),
-        "amountTyiyn": amount_tyiyn,
-        "amount": amount,
-        "currency": metadata.get("currency") or raw_payload.get("currency") or "KGS",
-        "clientCode": metadata.get("client_code") or metadata.get("payer_code"),
-        "clientName": metadata.get("client_name") or metadata.get("payer_full_name"),
-        "paymentMethod": transaction.get("transaction_type") or "qr",
-        "description": f"QR payment for {invoice_number or invoice_id}",
-    }
-    return {key: value for key, value in event.items() if value is not None}
+            detail=str(exc),
+        ) from exc
 
 
 def render_qr_png(data: str) -> StreamingResponse:

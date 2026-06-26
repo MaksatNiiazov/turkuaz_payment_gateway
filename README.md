@@ -151,8 +151,12 @@ PAYMENT_PROVIDER_BY_INTEGRATION=1c_obank:odengi,site:mkassa,pos:odengi
 | `POST` | `/api/v1/webhooks/mkassa` | Принять callback от MKassa |
 | `POST` | `/api/v1/webhooks/odengi` | Принять callback/result_url от О!Деньги |
 | `GET` | `/api/v1/integration` | Проверить, какой `integration_name` распознан по ключу |
+| `GET` | `/api/v1/local/tiger/invoice-events/pending` | Для Tiger worker: забрать оплаченные счета на экспорт или повтор |
+| `POST` | `/api/v1/local/tiger/invoice-events/{event_id}/result` | Для Tiger worker: сохранить результат экспорта в Tiger |
 | `GET` | `/api/v1/local/transactions/{transaction_id}` | Посмотреть сохраненное локальное состояние |
-| `GET` | `/api/v1/local/transactions/{transaction_id}/tiger-event-preview` | Посмотреть JSON события, которое будет отправлено в Tiger после оплаты |
+| `GET` | `/api/v1/local/transactions/{transaction_id}/tiger-event-preview` | Посмотреть JSON события оплаченного счета для Tiger |
+| `GET` | `/api/v1/local/tiger/invoice-events` | Админский список статусов экспорта счетов в Tiger |
+| `POST` | `/api/v1/local/tiger/invoice-events/{event_id}/reset` | Админский сброс события в `pending` для повторной выгрузки |
 | `GET` | `/api/v1/local/webhooks` | Посмотреть последние webhook-события |
 | `GET` | `/api/v1/local/access-events` | Посмотреть, какие интеграции обращались к сервису |
 
@@ -160,6 +164,23 @@ PAYMENT_PROVIDER_BY_INTEGRATION=1c_obank:odengi,site:mkassa,pos:odengi
 связаны с филиалами Turkuaz, не используются для доступа пользователей к сервисам и
 не требуют отдельного permission. Для О!Деньги эти поля не нужны; provider создает счет
 через `createInvoice` и возвращает готовые `qr`, `qr_url`, `link_app` и `site_pay`.
+
+### Экспорт оплаченных счетов в Tiger
+
+Tiger server находится во внутренней сети, поэтому интеграция работает как pull:
+Windows worker на сервере Tiger раз в заданный интервал запрашивает backend и
+забирает только оплаченные счета.
+
+Событие создается на уровне счета, а не отдельной банковской попытки. Если для
+одного invoice были QR в нескольких банках, в очередь попадет один оплаченный
+invoice, но внутри события будет указано, какой банк реально оплатил счет:
+`paidProvider`, `paidTransactionId`, `providerPaymentId`, `targetBankCode`,
+`targetBankAccountCode`.
+
+`invoiceId` является ключом идемпотентности для Tiger. После успешной выгрузки
+worker отправляет результат в `/api/v1/local/tiger/invoice-events/{event_id}/result`.
+Если нужно выгрузить повторно, админ может сбросить событие endpoint'ом
+`/api/v1/local/tiger/invoice-events/{event_id}/reset`.
 
 ## Примеры
 

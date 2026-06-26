@@ -18,8 +18,8 @@ it in this folder and deploy it to the Windows Tiger server separately.
 - `POST /tiger/test-login` - runs `Connect`, `UserLogin`, `CompanyLogin`, then
   logs out.
 - `GET /tiger/clients/sample` - reads 5 client rows from `LG_126_CLCARD`.
-- `POST /api/payments` - accepts the future payment payload but only validates
-  it while `DryRun=true`.
+- `POST /api/invoices/paid` - accepts the future paid-invoice payload but only
+  validates it while `DryRun=true`.
 
 ## Install .NET SDK
 
