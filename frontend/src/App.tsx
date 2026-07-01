@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AppShell,
   fetchServiceRegistry,
@@ -13,20 +13,26 @@ import {
   createDemoDynamicQr,
   fetchAccessEvents,
   fetchInvoiceTransactions,
+  fetchOneCPaymentEvents,
   fetchPrintQrCodes,
+  fetchTigerInvoiceEvents,
   fetchTransactions,
   fetchWebhooks,
   getToken,
   loginViaIdentity,
   qrImageUrl,
   refreshTransaction,
+  resetOneCPaymentEvent,
+  resetTigerInvoiceEvent,
   savePrintQrCodes,
 } from "./api";
 import type {
   AccessEvent,
   DynamicQrResponse,
+  OneCPaymentExportEvent,
   PaymentProvider,
   PrintQrCodeConfigItem,
+  TigerInvoiceExportEvent,
   TransactionRow,
   ViewMode,
   WebhookEvent,
@@ -73,14 +79,18 @@ function fixedPrintQrCodes(items: PrintQrCodeConfigItem[]): PrintQrCodeConfigIte
 function statusTone(status?: string | null): string {
   switch ((status || "").toLowerCase()) {
     case "paid":
+    case "success":
       return "good";
     case "failed":
     case "canceled":
     case "overdue":
+    case "error":
       return "bad";
     case "inited":
     case "waiting":
     case "qr_scanned":
+    case "pending":
+    case "processing":
       return "wait";
     default:
       return "muted";
@@ -202,6 +212,11 @@ function App() {
   const [invoiceId, setInvoiceId] = useState("");
   const [invoicePayments, setInvoicePayments] = useState<TransactionRow[]>([]);
   const [invoiceState, setInvoiceState] = useState<LoadState>({ loading: false, error: null });
+  const [queueStatusFilter, setQueueStatusFilter] = useState("");
+  const [tigerQueue, setTigerQueue] = useState<TigerInvoiceExportEvent[]>([]);
+  const [oneCQueue, setOneCQueue] = useState<OneCPaymentExportEvent[]>([]);
+  const [queueState, setQueueState] = useState<LoadState>({ loading: false, error: null });
+  const [resettingQueueKey, setResettingQueueKey] = useState<string | null>(null);
   const [webhooks, setWebhooks] = useState<WebhookEvent[]>([]);
   const [accessEvents, setAccessEvents] = useState<AccessEvent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -300,16 +315,37 @@ function App() {
     }
   }, [invoiceId]);
 
+  const loadQueues = useCallback(async () => {
+    setQueueState({ loading: true, error: null });
+    try {
+      const status = queueStatusFilter.trim() || undefined;
+      const [tigerRows, oneCRows] = await Promise.all([
+        fetchTigerInvoiceEvents({ limit, status }),
+        fetchOneCPaymentEvents({ limit, status }),
+      ]);
+      setTigerQueue(tigerRows);
+      setOneCQueue(oneCRows);
+      setQueueState({ loading: false, error: null });
+    } catch (error) {
+      setQueueState({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [limit, queueStatusFilter]);
+
   useEffect(() => {
     if (!isAuthenticated || isLoginPath) return;
     if (view === "print-settings") {
       void loadPrintSettings();
     } else if (view === "invoices") {
       if (invoiceId.trim()) void loadInvoicePayments();
+    } else if (view === "queues") {
+      void loadQueues();
     } else if (view !== "qr-demo") {
       void loadData();
     }
-  }, [invoiceId, isAuthenticated, isLoginPath, loadData, loadInvoicePayments, loadPrintSettings, view]);
+  }, [invoiceId, isAuthenticated, isLoginPath, loadData, loadInvoicePayments, loadPrintSettings, loadQueues, view]);
 
   useEffect(() => {
     let cancelled = false;
@@ -417,6 +453,44 @@ function App() {
     }
   }
 
+  async function handleResetTigerQueue(event: TigerInvoiceExportEvent) {
+    const confirmed = window.confirm(`Вернуть событие Tiger #${event.id} в очередь?`);
+    if (!confirmed || resettingQueueKey) return;
+
+    setResettingQueueKey(`tiger:${event.id}`);
+    setQueueState({ loading: false, error: null });
+    try {
+      await resetTigerInvoiceEvent(event.id);
+      await loadQueues();
+    } catch (error) {
+      setQueueState({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setResettingQueueKey(null);
+    }
+  }
+
+  async function handleResetOneCQueue(event: OneCPaymentExportEvent) {
+    const confirmed = window.confirm(`Вернуть событие 1С #${event.id} в очередь?`);
+    if (!confirmed || resettingQueueKey) return;
+
+    setResettingQueueKey(`1c:${event.id}`);
+    setQueueState({ loading: false, error: null });
+    try {
+      await resetOneCPaymentEvent(event.id);
+      await loadQueues();
+    } catch (error) {
+      setQueueState({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setResettingQueueKey(null);
+    }
+  }
+
   async function handleInvoiceRefresh(transaction: TransactionRow) {
     if (refreshingId) return;
     setRefreshingId(transaction.id);
@@ -477,6 +551,13 @@ function App() {
       onClick: () => setView("invoices"),
     },
     {
+      key: "queues",
+      label: "Очереди",
+      icon: "activity" as const,
+      active: view === "queues",
+      onClick: () => setView("queues"),
+    },
+    {
       key: "access",
       label: "Доступы",
       icon: "database" as const,
@@ -505,6 +586,8 @@ function App() {
         ? "Webhook события"
         : view === "access"
           ? "Доступы"
+          : view === "queues"
+          ? "Очереди"
           : view === "invoices"
           ? "Счет 1С"
           : view === "print-settings"
@@ -513,6 +596,8 @@ function App() {
   const pageDescription =
     view === "invoices"
       ? "Один счет из 1С и все связанные оплаты в МБанк, О!Банк и других QR."
+    : view === "queues"
+      ? "Статусы отправки успешных оплат в Tiger и 1С."
     : view === "print-settings"
       ? "Банковские QR-коды для печатной формы 1С."
       : view === "qr-demo"
@@ -561,6 +646,8 @@ function App() {
           onClick: () =>
             view === "print-settings"
               ? void loadPrintSettings()
+              : view === "queues"
+                ? void loadQueues()
               : view === "invoices"
                 ? void loadInvoicePayments()
                 : void loadData(),
@@ -578,6 +665,20 @@ function App() {
             state={printSettingsState}
             onReload={() => void loadPrintSettings()}
             onSave={(items) => void handleSavePrintQrCodes(items)}
+          />
+        ) : view === "queues" ? (
+          <QueuesPanel
+            limit={limit}
+            oneCEvents={oneCQueue}
+            resettingKey={resettingQueueKey}
+            state={queueState}
+            statusFilter={queueStatusFilter}
+            tigerEvents={tigerQueue}
+            onLimitChange={setLimit}
+            onRefresh={() => void loadQueues()}
+            onResetOneC={(event) => void handleResetOneCQueue(event)}
+            onResetTiger={(event) => void handleResetTigerQueue(event)}
+            onStatusFilterChange={setQueueStatusFilter}
           />
         ) : view === "qr-demo" ? (
           <QrDemoPanel
@@ -989,6 +1090,242 @@ function InvoicePanel({
         )}
       </div>
     </section>
+  );
+}
+
+function QueuesPanel({
+  tigerEvents,
+  oneCEvents,
+  state,
+  statusFilter,
+  limit,
+  resettingKey,
+  onStatusFilterChange,
+  onLimitChange,
+  onRefresh,
+  onResetTiger,
+  onResetOneC,
+}: {
+  tigerEvents: TigerInvoiceExportEvent[];
+  oneCEvents: OneCPaymentExportEvent[];
+  state: LoadState;
+  statusFilter: string;
+  limit: number;
+  resettingKey: string | null;
+  onStatusFilterChange: (value: string) => void;
+  onLimitChange: (value: number) => void;
+  onRefresh: () => void;
+  onResetTiger: (event: TigerInvoiceExportEvent) => void;
+  onResetOneC: (event: OneCPaymentExportEvent) => void;
+}) {
+  const tigerPending = tigerEvents.filter((event) => event.status === "pending" || event.status === "error").length;
+  const oneCPending = oneCEvents.filter((event) => event.status === "pending" || event.status === "error").length;
+
+  return (
+    <section className="queues-panel">
+      <section className="toolbar">
+        <label>
+          Лимит
+          <input
+            max={500}
+            min={1}
+            type="number"
+            value={limit}
+            onChange={(event) => onLimitChange(Number(event.target.value) || 50)}
+          />
+        </label>
+        <label>
+          Статус
+          <select value={statusFilter} onChange={(event) => onStatusFilterChange(event.target.value)}>
+            <option value="">Все</option>
+            <option value="pending">pending</option>
+            <option value="success">success</option>
+            <option value="error">error</option>
+          </select>
+        </label>
+        <button className="refresh" disabled={state.loading} type="button" onClick={onRefresh}>
+          <Icon name="refresh" size={16} />
+          {state.loading ? "Загрузка..." : "Обновить"}
+        </button>
+        <div className="toolbar-state">
+          {state.loading ? "Загрузка..." : state.error ? state.error : "Очереди загружены"}
+        </div>
+      </section>
+
+      <section className="metrics-grid invoice-metrics">
+        <div className="metric">
+          <Icon name="database" size={20} />
+          <span>Tiger всего</span>
+          <strong>{tigerEvents.length}</strong>
+        </div>
+        <div className="metric">
+          <Icon name="activity" size={20} />
+          <span>Tiger pending/error</span>
+          <strong>{tigerPending}</strong>
+        </div>
+        <div className="metric">
+          <Icon name="file" size={20} />
+          <span>1С всего</span>
+          <strong>{oneCEvents.length}</strong>
+        </div>
+        <div className="metric">
+          <Icon name="activity" size={20} />
+          <span>1С pending/error</span>
+          <strong>{oneCPending}</strong>
+        </div>
+      </section>
+
+      <div className="queue-grid">
+        <QueueCard title="Tiger">
+          <TigerQueueTable
+            events={tigerEvents}
+            resettingKey={resettingKey}
+            onReset={onResetTiger}
+          />
+        </QueueCard>
+        <QueueCard title="1С">
+          <OneCQueueTable
+            events={oneCEvents}
+            resettingKey={resettingKey}
+            onReset={onResetOneC}
+          />
+        </QueueCard>
+      </div>
+    </section>
+  );
+}
+
+function QueueCard({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="queue-card">
+      <div className="queue-card-header">
+        <h2>{title}</h2>
+      </div>
+      <div className="queue-table-wrap">{children}</div>
+    </section>
+  );
+}
+
+function TigerQueueTable({
+  events,
+  resettingKey,
+  onReset,
+}: {
+  events: TigerInvoiceExportEvent[];
+  resettingKey: string | null;
+  onReset: (event: TigerInvoiceExportEvent) => void;
+}) {
+  if (events.length === 0) return <EmptyState />;
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Status</th>
+          <th>Счет</th>
+          <th>Оплата</th>
+          <th>Банк Tiger</th>
+          <th>Попытки</th>
+          <th>Результат</th>
+          <th>Ошибка</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {events.map((event) => (
+          <tr key={event.id}>
+            <td className="mono">#{event.id}</td>
+            <td><span className={`status ${statusTone(event.status)}`}>{event.status}</span></td>
+            <td>
+              <div>{event.invoice_number || "-"}</div>
+              <div className="mono muted-inline">{truncate(event.invoice_id, 18)}</div>
+            </td>
+            <td>
+              <div>{providerLabel(event.paid_provider)}</div>
+              <div>{formatAmount(event.amount)}</div>
+            </td>
+            <td className="mono">{event.target_bank_account_code || event.target_bank_code || "-"}</td>
+            <td>{event.attempt_count}</td>
+            <td>
+              <div>{event.tiger_fiche_no || "-"}</div>
+              <div className="mono muted-inline">{event.tiger_logical_ref || ""}</div>
+            </td>
+            <td>{event.error_message ? truncate(event.error_message, 48) : "-"}</td>
+            <td>
+              <button
+                className="icon-action"
+                disabled={resettingKey === `tiger:${event.id}`}
+                title="Вернуть в очередь Tiger"
+                type="button"
+                onClick={() => onReset(event)}
+              >
+                <Icon name="refresh" size={15} />
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function OneCQueueTable({
+  events,
+  resettingKey,
+  onReset,
+}: {
+  events: OneCPaymentExportEvent[];
+  resettingKey: string | null;
+  onReset: (event: OneCPaymentExportEvent) => void;
+}) {
+  if (events.length === 0) return <EmptyState />;
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Status</th>
+          <th>Счет</th>
+          <th>Оплата</th>
+          <th>QR</th>
+          <th>Попытки</th>
+          <th>Документ 1С</th>
+          <th>Ошибка</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {events.map((event) => (
+          <tr key={event.id}>
+            <td className="mono">#{event.id}</td>
+            <td><span className={`status ${statusTone(event.status)}`}>{event.status}</span></td>
+            <td>
+              <div>{event.invoice_number || "-"}</div>
+              <div className="mono muted-inline">{truncate(event.invoice_id, 18)}</div>
+            </td>
+            <td>
+              <div>{providerLabel(event.paid_provider)}</div>
+              <div>{formatAmount(event.amount)}</div>
+            </td>
+            <td>{event.payment_code || "-"}</td>
+            <td>{event.attempt_count}</td>
+            <td>{event.one_c_document_id || "-"}</td>
+            <td>{event.error_message ? truncate(event.error_message, 48) : "-"}</td>
+            <td>
+              <button
+                className="icon-action"
+                disabled={resettingKey === `1c:${event.id}`}
+                title="Вернуть в очередь 1С"
+                type="button"
+                onClick={() => onReset(event)}
+              >
+                <Icon name="refresh" size={15} />
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

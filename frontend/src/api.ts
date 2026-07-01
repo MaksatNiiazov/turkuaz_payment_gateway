@@ -1,8 +1,10 @@
 import type {
   AccessEvent,
   DynamicQrResponse,
+  OneCPaymentExportEvent,
   PaymentProvider,
   PrintQrCodeConfigItem,
+  TigerInvoiceExportEvent,
   TransactionRow,
   WebhookEvent,
 } from "./types";
@@ -125,6 +127,38 @@ export function createDemoDynamicQr(payload: {
 
 export function fetchPrintQrCodes(): Promise<PrintQrCodeConfigItem[]> {
   return requestJson<PrintQrCodeConfigItem[]>("/api/v1/admin/print-qr-codes");
+}
+
+export function fetchTigerInvoiceEvents(filters: {
+  limit: number;
+  status?: string;
+}): Promise<TigerInvoiceExportEvent[]> {
+  return requestJson<TigerInvoiceExportEvent[]>(
+    `/api/v1/local/tiger/invoice-events?${params(filters)}`,
+  );
+}
+
+export function resetTigerInvoiceEvent(eventId: number): Promise<TigerInvoiceExportEvent> {
+  return requestJson<TigerInvoiceExportEvent>(
+    `/api/v1/local/tiger/invoice-events/${eventId}/reset`,
+    { method: "POST", body: "" },
+  );
+}
+
+export function fetchOneCPaymentEvents(filters: {
+  limit: number;
+  status?: string;
+}): Promise<OneCPaymentExportEvent[]> {
+  return requestJson<OneCPaymentExportEvent[]>(
+    `/api/v1/local/1c/payment-events?${params(filters)}`,
+  );
+}
+
+export function resetOneCPaymentEvent(eventId: number): Promise<OneCPaymentExportEvent> {
+  return requestJson<OneCPaymentExportEvent>(
+    `/api/v1/local/1c/payment-events/${eventId}/reset`,
+    { method: "POST", body: "" },
+  );
 }
 
 export function savePrintQrCodes(items: PrintQrCodeConfigItem[]): Promise<PrintQrCodeConfigItem[]> {

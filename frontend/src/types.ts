@@ -68,10 +68,55 @@ export type PrintQrCodeConfigItem = {
   tiger_bank_account_code: string | null;
 };
 
+export type TigerInvoiceExportEvent = {
+  id: number;
+  invoice_id: string;
+  invoice_number: string | null;
+  paid_transaction_id: string;
+  paid_provider: string;
+  provider_payment_id: string | null;
+  target_bank_code: string | null;
+  target_bank_account_code: string | null;
+  amount: number | null;
+  currency: string | null;
+  status: string;
+  event_payload: Record<string, unknown>;
+  tiger_logical_ref: string | null;
+  tiger_fiche_no: string | null;
+  error_message: string | null;
+  attempt_count: number;
+  last_attempt_at: string | null;
+  exported_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OneCPaymentExportEvent = {
+  id: number;
+  payment_id: string;
+  invoice_id: string;
+  invoice_number: string | null;
+  payment_code: string | null;
+  paid_provider: string;
+  provider_payment_id: string | null;
+  amount: number | null;
+  currency: string | null;
+  status: string;
+  event_payload: Record<string, unknown>;
+  one_c_document_id: string | null;
+  error_message: string | null;
+  attempt_count: number;
+  last_attempt_at: string | null;
+  exported_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ViewMode =
   | "transactions"
   | "webhooks"
   | "invoices"
+  | "queues"
   | "access"
   | "qr-demo"
   | "print-settings";

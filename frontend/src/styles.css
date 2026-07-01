@@ -198,6 +198,46 @@
   gap: 6px;
 }
 
+.queues-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.queue-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.queue-card {
+  display: grid;
+  gap: 10px;
+}
+
+.queue-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.queue-card-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.queue-table-wrap {
+  overflow-x: auto;
+}
+
+.queue-table-wrap table {
+  min-width: 980px;
+}
+
+.muted-inline {
+  color: var(--text-muted, #64748b);
+  font-size: 12px;
+}
+
 .transaction-group-row td {
   border-top: 1px solid var(--border, #d7dee8);
   background: var(--surface-muted, #f4f7f9);
