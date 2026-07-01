@@ -65,6 +65,7 @@ export type PrintQrCodeConfigItem = {
   enabled: boolean;
   slot: number;
   sort_order: number;
+  tiger_bank_account_code: string | null;
 };
 
 export type ViewMode =

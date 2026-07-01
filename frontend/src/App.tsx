@@ -55,10 +55,10 @@ type CurrentIdentityUser = {
 };
 
 const FIXED_PRINT_QR_CODE_TEMPLATES: PrintQrCodeConfigItem[] = [
-  { code: "mbank", label: "MBank", provider: "mkassa", enabled: true, slot: 1, sort_order: 10 },
-  { code: "obank", label: "О!Банк", provider: "odengi", enabled: true, slot: 2, sort_order: 20 },
-  { code: "qr_3", label: "QR 3", provider: "mkassa", enabled: false, slot: 3, sort_order: 30 },
-  { code: "qr_4", label: "QR 4", provider: "odengi", enabled: false, slot: 4, sort_order: 40 },
+  { code: "mbank", label: "MBank", provider: "mkassa", enabled: true, slot: 1, sort_order: 10, tiger_bank_account_code: null },
+  { code: "obank", label: "О!Банк", provider: "odengi", enabled: true, slot: 2, sort_order: 20, tiger_bank_account_code: null },
+  { code: "qr_3", label: "QR 3", provider: "mkassa", enabled: false, slot: 3, sort_order: 30, tiger_bank_account_code: null },
+  { code: "qr_4", label: "QR 4", provider: "odengi", enabled: false, slot: 4, sort_order: 40, tiger_bank_account_code: null },
 ];
 
 function fixedPrintQrCodes(items: PrintQrCodeConfigItem[]): PrintQrCodeConfigItem[] {
@@ -513,8 +513,8 @@ function App() {
   const pageDescription =
     view === "invoices"
       ? "Один счет из 1С и все связанные оплаты в МБанк, О!Банк и других QR."
-      : view === "print-settings"
-      ? "Порядок, подписи и включенные QR-коды для печатной формы 1С."
+    : view === "print-settings"
+      ? "Банковские QR-коды для печатной формы 1С."
       : view === "qr-demo"
       ? "Создание тестового динамического QR через backend API."
       : "Операционная панель для просмотра платежей, callback'ов и обращений интеграций.";
@@ -1091,6 +1091,7 @@ function PrintSettingsPanel({
       .map((item, index) => ({
         ...item,
         label: item.label.trim(),
+        tiger_bank_account_code: item.tiger_bank_account_code?.trim() || null,
         slot: Number(item.slot) || 1,
         sort_order: ((Number(item.slot) || 1) * 10) + index,
       }))
@@ -1103,7 +1104,11 @@ function PrintSettingsPanel({
   const enabledSlots = draft.filter((item) => item.enabled).map((item) => Number(item.slot));
   const hasDuplicateSlots = new Set(enabledSlots).size !== enabledSlots.length;
   const hasEmptyFields = draft.some((item) => !item.label.trim());
-  const canSave = !hasDuplicateSlots && !hasEmptyFields && !state.loading;
+  const hasMissingTigerAccounts = draft.some(
+    (item) => item.enabled && !item.tiger_bank_account_code?.trim(),
+  );
+  const canSave =
+    !hasDuplicateSlots && !hasEmptyFields && !hasMissingTigerAccounts && !state.loading;
 
   return (
     <section className="settings-panel">
@@ -1129,6 +1134,9 @@ function PrintSettingsPanel({
       {state.error && <p className="error-copy">{state.error}</p>}
       {hasDuplicateSlots && <p className="error-copy">У включенных QR не должен повторяться слот.</p>}
       {hasEmptyFields && <p className="error-copy">Заполните подпись для каждой строки.</p>}
+      {hasMissingTigerAccounts && (
+        <p className="error-copy">Укажите счёт Tiger для каждого включённого QR.</p>
+      )}
 
       <div className="settings-table-wrap">
         <table className="settings-table">
@@ -1139,6 +1147,7 @@ function PrintSettingsPanel({
               <th>Код</th>
               <th>Подпись</th>
               <th>Provider</th>
+              <th>Счёт Tiger</th>
             </tr>
           </thead>
           <tbody>
@@ -1181,6 +1190,16 @@ function PrintSettingsPanel({
                     <option value="mkassa">MKassa / MBank</option>
                     <option value="odengi">O!Dengi / O!Bank</option>
                   </select>
+                </td>
+                <td>
+                  <input
+                    className="mono"
+                    placeholder="BANKACC.CODE"
+                    value={item.tiger_bank_account_code ?? ""}
+                    onChange={(event) =>
+                      updateItem(index, { tiger_bank_account_code: event.target.value || null })
+                    }
+                  />
                 </td>
               </tr>
             ))}

@@ -397,6 +397,7 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
                         "enabled": True,
                         "slot": 2,
                         "sort_order": 10,
+                        "tiger_bank_account_code": "102.OBANK",
                     },
                     {
                         "code": "mbank",
@@ -405,6 +406,7 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
                         "enabled": False,
                         "slot": 1,
                         "sort_order": 20,
+                        "tiger_bank_account_code": "102.MBANK",
                     },
                     {
                         "code": "qr_3",
@@ -413,6 +415,7 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
                         "enabled": False,
                         "slot": 3,
                         "sort_order": 30,
+                        "tiger_bank_account_code": None,
                     },
                     {
                         "code": "qr_4",
@@ -421,6 +424,7 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
                         "enabled": False,
                         "slot": 4,
                         "sort_order": 40,
+                        "tiger_bank_account_code": None,
                     },
                 ]
             },
@@ -437,6 +441,7 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
             "enabled": True,
             "slot": 2,
             "sort_order": 10,
+            "tiger_bank_account_code": "102.OBANK",
         },
         {
             "code": "mbank",
@@ -445,6 +450,7 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
             "enabled": False,
             "slot": 1,
             "sort_order": 20,
+            "tiger_bank_account_code": "102.MBANK",
         },
         {
             "code": "qr_3",
@@ -453,6 +459,7 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
             "enabled": False,
             "slot": 3,
             "sort_order": 30,
+            "tiger_bank_account_code": None,
         },
         {
             "code": "qr_4",
@@ -461,6 +468,7 @@ def test_admin_print_qr_codes_can_be_reordered_and_renamed(tmp_path: Path) -> No
             "enabled": False,
             "slot": 4,
             "sort_order": 40,
+            "tiger_bank_account_code": None,
         },
     ]
 
@@ -478,6 +486,7 @@ def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: 
         "amount": 1500000,
         "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
         "invoice_number": "TIGER-1001",
+        "client_code": "120.TEST.001",
     }
     with TestClient(app) as client:
         configured = client.put(
@@ -492,6 +501,7 @@ def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: 
                         "enabled": True,
                         "slot": 2,
                         "sort_order": 10,
+                        "tiger_bank_account_code": "102.OBANK",
                     },
                     {
                         "code": "mbank",
@@ -500,6 +510,7 @@ def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: 
                         "enabled": True,
                         "slot": 1,
                         "sort_order": 20,
+                        "tiger_bank_account_code": "102.MBANK",
                     },
                     {
                         "code": "qr_3",
@@ -543,11 +554,11 @@ def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: 
     assert odengi.dynamic_create_count == 1
     assert mkassa.dynamic_create_count == 1
     assert odengi.last_dynamic_payload.metadata == {
-        "source": "1c",
         "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
         "invoice_number": "TIGER-1001",
         "print_qr_code": "obank",
-        "print_qr_slot": "2",
+        "client_code": "120.TEST.001",
+        "tiger_bank_account_code": "102.OBANK",
     }
 
 
@@ -1028,6 +1039,134 @@ def test_tiger_worker_can_report_success_and_admin_can_reset(tmp_path: Path) -> 
     assert reset.json()["tiger_logical_ref"] is None
 
 
+def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    app = create_app(
+        settings=make_settings(db_path),
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(db_path),
+    )
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    with TestClient(app) as client:
+        payload = {
+            "id": "MKSA-1C-RESULT-1",
+            "status": "paid",
+            "amount": "1500000",
+            "paid_at": "2026-06-30T10:30:00+06:00",
+            "metadata": {
+                "invoice_id": invoice_id,
+                "invoice_number": "TIGER-FACTURE-1001",
+                "client_code": "CARI.001",
+                "print_qr_code": "mbank",
+            },
+        }
+        first_webhook = client.post("/api/v1/webhooks/mkassa", json=payload)
+        duplicate_webhook = client.post("/api/v1/webhooks/mkassa", json=payload)
+        pending = client.get(
+            "/api/v1/local/1c/payment-events/pending",
+            headers={"X-Integration-Key": "erp-secret"},
+        )
+        event_id = pending.json()[0]["id"]
+        failed_result = client.post(
+            f"/api/v1/local/1c/payment-events/{event_id}/result",
+            headers={"X-Integration-Key": "erp-secret"},
+            json={"success": False, "error_message": "1C document is locked"},
+        )
+        retry_pending = client.get(
+            "/api/v1/local/1c/payment-events/pending",
+            headers={"X-Integration-Key": "erp-secret"},
+        )
+        result = client.post(
+            f"/api/v1/local/1c/payment-events/{event_id}/result",
+            headers={"X-Integration-Key": "erp-secret"},
+            json={"success": True, "one_c_document_id": "1C-PAYMENT-1001"},
+        )
+        after_success = client.get(
+            "/api/v1/local/1c/payment-events/pending",
+            headers={"X-Integration-Key": "erp-secret"},
+        )
+        reset = client.post(
+            f"/api/v1/local/1c/payment-events/{event_id}/reset",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert first_webhook.status_code == 200
+    assert duplicate_webhook.json()["duplicate"] is True
+    assert pending.status_code == 200
+    assert len(pending.json()) == 1
+    assert pending.json()[0]["payment_id"] == "MKSA-1C-RESULT-1"
+    assert pending.json()[0]["invoice_id"] == invoice_id
+    assert pending.json()[0]["payment_code"] == "mbank"
+    assert pending.json()[0]["event_payload"] == {
+        "paymentId": "MKSA-1C-RESULT-1",
+        "invoiceId": invoice_id,
+        "invoiceNumber": "TIGER-FACTURE-1001",
+        "paymentCode": "mbank",
+        "paidProvider": "mkassa",
+        "providerPaymentId": "MKSA-1C-RESULT-1",
+        "paidAt": "2026-06-30T10:30:00+06:00",
+        "amountTyiyn": 1500000,
+        "amount": 15000.0,
+        "currency": "KGS",
+        "clientCode": "CARI.001",
+        "paymentMethod": "qr",
+        "status": "paid",
+    }
+    assert failed_result.status_code == 200
+    assert failed_result.json()["status"] == "error"
+    assert failed_result.json()["attempt_count"] == 1
+    assert retry_pending.json()[0]["id"] == event_id
+    assert retry_pending.json()[0]["error_message"] == "1C document is locked"
+    assert result.status_code == 200
+    assert result.json()["status"] == "success"
+    assert result.json()["one_c_document_id"] == "1C-PAYMENT-1001"
+    assert result.json()["attempt_count"] == 2
+    assert after_success.json() == []
+    assert reset.status_code == 200
+    assert reset.json()["status"] == "pending"
+    assert reset.json()["one_c_document_id"] is None
+
+
+def test_one_c_keeps_each_paid_transaction_while_tiger_keeps_one_invoice(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    app = create_app(
+        settings=make_settings(db_path),
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(db_path),
+    )
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    with TestClient(app) as client:
+        for transaction_id in ("PAID-BANK-A", "PAID-BANK-B"):
+            response = client.post(
+                "/api/v1/webhooks/mkassa",
+                json={
+                    "id": transaction_id,
+                    "status": "paid",
+                    "amount": 10000,
+                    "metadata": {"invoice_id": invoice_id},
+                },
+            )
+            assert response.status_code == 200
+
+        one_c_pending = client.get(
+            "/api/v1/local/1c/payment-events/pending",
+            headers={"X-Integration-Key": "erp-secret"},
+        )
+        tiger_pending = client.get(
+            "/api/v1/local/tiger/invoice-events/pending",
+            headers={"X-Integration-Key": "erp-secret"},
+        )
+
+    assert {item["payment_id"] for item in one_c_pending.json()} == {
+        "PAID-BANK-A",
+        "PAID-BANK-B",
+    }
+    assert len(tiger_pending.json()) == 1
+    assert tiger_pending.json()[0]["invoice_id"] == invoice_id
+
+
 def test_tiger_event_preview_rejects_unpaid_transaction(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     store = SQLitePaymentStore(db_path)
@@ -1101,18 +1240,25 @@ def test_paid_webhook_cancels_other_active_transaction_for_same_invoice(tmp_path
                 "id": "MBANK-1",
                 "status": "paid",
                 "amount": "100",
-                "metadata": {"invoice_id": invoice_id, "print_qr_code": "mbank"},
+                "metadata": {"invoice_id": invoice_id},
             },
         )
         other = client.get(
             "/api/v1/local/transactions/OBANK-1",
             headers={"X-Admin-Key": "admin-secret"},
         )
+        one_c_pending = client.get(
+            "/api/v1/local/1c/payment-events/pending",
+            headers={"X-Integration-Key": "mkassa-secret"},
+        )
 
     assert webhook.status_code == 200
     assert webhook.json()["duplicate"] is False
     assert other.status_code == 200
     assert other.json()["status"] == "canceled"
+    assert one_c_pending.status_code == 200
+    assert one_c_pending.json()[0]["payment_code"] == "mbank"
+    assert one_c_pending.json()[0]["event_payload"]["paymentCode"] == "mbank"
     assert odengi.canceled_transaction_ids == ["987654321"]
     assert mkassa.canceled_transaction_ids == []
 

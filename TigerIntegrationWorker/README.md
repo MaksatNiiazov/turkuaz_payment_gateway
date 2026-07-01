@@ -1,11 +1,10 @@
 # Tiger Integration Worker
 
-Small standalone Windows-only C# API for testing Logo Tiger / LObjects
-integration.
+Small standalone Windows-only C# worker for Logo Tiger / LObjects integration.
 
 This worker must run on the Tiger Windows server where `LObjects.dll` is
-registered. It does not create Tiger documents yet. The current endpoints are
-safe smoke tests and read-only checks.
+registered. It can poll paid invoice events from PaymentGateway and create one
+incoming bank voucher per invoice through `doBankVoucher=24`.
 
 This is a separate project from the Python/FastAPI PaymentGateway backend. Keep
 it in this folder and deploy it to the Windows Tiger server separately.
@@ -18,8 +17,19 @@ it in this folder and deploy it to the Windows Tiger server separately.
 - `POST /tiger/test-login` - runs `Connect`, `UserLogin`, `CompanyLogin`, then
   logs out.
 - `GET /tiger/clients/sample` - reads 5 client rows from `LG_126_CLCARD`.
-- `POST /api/invoices/paid` - accepts the future paid-invoice payload but only
-  validates it while `DryRun=true`.
+- `POST /api/invoices/paid` - validates or posts one paid-invoice event.
+- background poller - pulls pending events from PaymentGateway and reports the
+  resulting Tiger logical reference and fiche number.
+
+The confirmed write path is:
+
+```text
+ImportFromXmlStr -> Post -> Read(LOGICALREF) -> verify line/PAYMENT_LIST
+```
+
+The worker serializes all COM operations. A stable hash of `invoiceId` is stored
+in `BNFICHE.GENEXP1` through `NOTES1`; it is checked before each write to avoid
+duplicate vouchers after a network failure.
 
 ## Install .NET SDK
 
@@ -50,12 +60,35 @@ Edit only `appsettings.json`:
     "FirmNo": 126,
     "PeriodNo": 1,
     "IntegrationKey": "use-a-long-random-secret",
-    "DryRun": true
+    "DryRun": true,
+    "AllowedWriteFirmNos": [],
+    "TestDocumentDateOverride": null
+  },
+  "Gateway": {
+    "Enabled": false,
+    "BaseUrl": "https://payments.example.com",
+    "IntegrationKey": "use-a-long-random-secret",
+    "PollIntervalMinutes": 30,
+    "BatchSize": 20,
+    "MaxAttempts": 5
   }
 }
 ```
 
 Do not commit `appsettings.json` with real credentials.
+
+Start with both protections enabled:
+
+```json
+"DryRun": true,
+"AllowedWriteFirmNos": [],
+"Gateway": { "Enabled": false }
+```
+
+For controlled writes to the test firm only, use `FirmNo=923`, `PeriodNo=1`,
+set `AllowedWriteFirmNos` to `[923]`, and only then set `DryRun=false`.
+`TestDocumentDateOverride` may be used only for firm `923`, whose test period
+ends in 2025. It is rejected for every other firm.
 
 ## Run
 
@@ -91,11 +124,104 @@ Read sample clients:
 curl -H "X-Integration-Key: use-a-long-random-secret" http://127.0.0.1:5088/tiger/clients/sample
 ```
 
+## First C# Dry-Run In 923/1
+
+Use this test configuration before enabling polling:
+
+```json
+"FirmNo": 923,
+"PeriodNo": 1,
+"DryRun": true,
+"AllowedWriteFirmNos": [],
+"TestDocumentDateOverride": "2024-05-31"
+```
+
+Keep `Gateway:Enabled=false`, start the worker, then run in another PowerShell:
+
+```powershell
+$headers = @{ "X-Integration-Key" = "use-a-long-random-secret" }
+$body = @{
+    invoiceId = "CSharp-DryRun-001"
+    invoiceNumber = "TEST-001"
+    paidTransactionId = "TEST-PAYMENT-001"
+    paidProvider = "test"
+    providerPaymentId = "TEST-PROVIDER-001"
+    targetBankCode = "TEST"
+    targetBankAccountCode = "10200 100.01.001"
+    paidAt = "2026-07-01T07:00:00+06:00"
+    amountTyiyn = 100
+    amount = 1
+    currency = "KGS"
+    clientCode = "120.04.2.01.1451"
+    clientName = "Test"
+    paymentMethod = "qr"
+    description = "C# dry-run"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://127.0.0.1:5088/api/invoices/paid" `
+    -Headers $headers `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+Expected: `success=true`, `dryRun=true`, `savedLineCount=1`, and no Tiger
+logical reference. A dry-run never calls `Post()`.
+
+## Inspect DataObjectType Without Writing
+
+`Inspect-LObjectsDataObjectType.ps1` reads the `DataObjectType` enum directly
+from the COM type library in `LObjects.dll`. It does not register the DLL,
+connect to Tiger, access SQL, or call `NewDataObject`/`Post`.
+
+```powershell
+cd C:\path\to\TigerIntegrationWorker
+powershell -ExecutionPolicy Bypass -File .\Inspect-LObjectsDataObjectType.ps1
+```
+
+The default DLL path is `C:\LOGO\TIGER3ENT\LObjects.dll`. Pass
+`-LObjectsPath` only when Tiger is installed elsewhere.
+
+Confirmed from the installed type library and official Polaris documentation:
+
+```text
+DataObjectType: doBankVoucher (24)
+XML root: BANK_VOUCHERS
+REST resource: bankVouchers
+Line collection: TRANSACTIONS
+Line append method: AppendLine()
+```
+
+For an existing voucher, call `Read(LOGICALREF)` before
+`ExportToXMLStr("BANK_VOUCHERS", ...)`. Do not call `Post()` during schema
+inspection.
+
+The minimal incoming voucher payload has been confirmed in test firm `923/1`:
+
+```text
+header: TYPE=3, TOTAL_DEBIT, NOTES1, CURRSEL_TOTALS=1
+line: TYPE=1, BANKACC_CODE, ARP_CODE, TRCODE=3, MODULENR=7
+line: CURR_TRANS=37, DEBIT, AMOUNT, TC_XRATE=1, TC_AMOUNT
+line: BANK_PROC_TYPE=2, AFFECT_RISK=1, BN_CRDTYPE=3, COSTTYPE=1
+```
+
+The event must contain the real Tiger `CLCARD.CODE` in `clientCode` and the
+real Tiger `BANKACC.CODE` in `targetBankAccountCode`. Only KGS is enabled.
+
+Logo Objects is licensed per server and requires a runtime license. Keep one
+serialized COM session: error `-13` means the runtime license is unavailable
+and `-93` means the terminal limit was exceeded. After `Post()`, call
+`Read(LOGICALREF)` again before checking `TRANSACTIONS`, because nested line
+objects are freed during the post.
+
 ## Safety
 
-- Keep `DryRun=true`.
-- Do not add document creation until the exact Logo `DataObjectType` and fields
-  are confirmed.
+- Keep `DryRun=true` until the manual endpoint succeeds on the deployed worker.
+- Keep `AllowedWriteFirmNos=[]` until a specific test or production firm is
+  explicitly approved.
 - Do not write directly to the Tiger SQL database.
+- Do not run concurrent Logo Objects sessions from this worker.
 - Do not expose this API publicly. Keep it on the Tiger server or behind an
   internal firewall/VPN.
+- Dry-run polling never acknowledges queue events as successful.

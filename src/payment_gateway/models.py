@@ -346,6 +346,11 @@ class PrintQRCodeConfigItem(APIModel):
     enabled: bool = Field(default=True, description="Whether 1C should print this QR.")
     slot: int = Field(default=1, ge=1, le=4, description="1C layout slot number, from 1 to 4.")
     sort_order: int = Field(default=100, ge=0, le=10000, description="Print order.")
+    tiger_bank_account_code: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Tiger BANKACC.CODE used when this QR is paid.",
+    )
 
     @field_validator("code", mode="before")
     @classmethod
@@ -361,6 +366,14 @@ class PrintQRCodeConfigItem(APIModel):
     @classmethod
     def validate_provider(cls, value: Any) -> str:
         return parse_print_provider(value)
+
+    @field_validator("tiger_bank_account_code", mode="before")
+    @classmethod
+    def validate_tiger_bank_account_code(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        parsed = str(value).strip()
+        return parsed or None
 
 
 class PrintQRCodeConfigUpdate(APIModel):
@@ -381,6 +394,12 @@ class PrintQRCodeConfigUpdate(APIModel):
         enabled_slots = [item.slot for item in value if item.enabled]
         if len(enabled_slots) != len(set(enabled_slots)):
             raise ValueError("enabled print QR slots must be unique")
+        missing_tiger_accounts = [
+            item.code for item in value if item.enabled and not item.tiger_bank_account_code
+        ]
+        if missing_tiger_accounts:
+            codes = ", ".join(sorted(missing_tiger_accounts))
+            raise ValueError(f"enabled print QR codes require Tiger bank accounts: {codes}")
         return value
 
 
@@ -396,6 +415,11 @@ class InvoiceQRCodeCreate(APIModel):
         max_length=150,
         description="Human-readable invoice or facture number.",
     )
+    client_code: str = Field(
+        min_length=1,
+        max_length=150,
+        description="Tiger CLCARD.CODE for the invoice customer.",
+    )
     source: str = Field(default="1c", max_length=150, description="Source label.")
 
     @field_validator("amount", mode="before")
@@ -406,7 +430,7 @@ class InvoiceQRCodeCreate(APIModel):
             raise ValueError("amount is required")
         return amount
 
-    @field_validator("invoice_id", "source", mode="before")
+    @field_validator("invoice_id", "client_code", "source", mode="before")
     @classmethod
     def validate_required_string(cls, value: Any) -> str:
         return parse_string(value)

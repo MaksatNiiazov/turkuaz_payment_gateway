@@ -72,10 +72,131 @@ Connect() -> UserLogin(username, password) -> CompanyLogin(126)
 
 - After login, `CurrentFirm=126`, `CurrentPeriod=1`.
 - `NewQuery()` and `OpenDirect()` can read Tiger tables through LObjects.
+- SSMS confirmed that `LG_126_01_INVOICE`, `LG_126_01_BNFICHE`,
+  `LG_126_01_BNFLINE`, `LG_126_BANKACC`, `LG_126_BNCARD` and
+  `LG_126_CLCARD` exist in the database.
+- LObjects `NewQuery` reads `LG_126_CLCARD`, but attempts to query
+  `LG_126_01_INVOICE` and `SYS.TABLES` returned error `-10`. Schema discovery
+  therefore uses read-only SSMS queries.
+- A 100-row invoice sample confirmed that `DOCODE` is optional and repeated,
+  so it cannot be the integration id. `LOGICALREF` is the preferred internal
+  Tiger identifier; `FICHENO` remains a possible visible identifier when paired
+  with firm, period and amount.
+- Bank metadata provided the candidate join path
+  `BNFLINE -> BNFICHE/BNCARD/BANKACC/CLCARD`. `BNFLINE` contains the amount,
+  currency, client, bank account and external-reference fields needed to model
+  an incoming payment.
+- Existing rows confirmed that an incoming bank receipt uses `TRCODE=3`,
+  `TRANSTYPE=1`, `SIGN=0` in this database. The sampled rows had no direct
+  invoice link (`PAYMENTREF`, `CLFLINEREF`, `CLFICHEREF` were zero), so debt
+  closing must be investigated separately.
+- `LG_126_01_PAYTRANS` contains debt-closing and bank-link fields including
+  `FICHEREF`, `FICHELINEREF`, `TOTAL`, `PAID`, `CROSSREF`, `BANKACCREF`,
+  `BNFCHREF` and `BNFLNREF`. This is the next table to inspect for invoice
+  payment status and links to bank documents.
+- In this database, aggregation showed that `PAID`, `CROSSREF`, `BANKACCREF`,
+  `BNFCHREF` and `BNFLNREF` are not populated in the sampled `PAYTRANS`
+  groups. `PAYTRANS` is useful for invoice debt rows, but actual payment links
+  likely need `CLFICHE`/`CLFLINE` plus bank tables.
+- Read-only schema inspection confirmed that `CLFLINE` contains
+  `MODULENR`, `SOURCEFREF`, `PAYMENTREF`, `BANKACCREF` and `BNACCREF`;
+  `CLFICHE` contains `INVOREF`, `CLCARDREF`, `BANKACCREF` and `BNACCREF`.
+  These are the current candidates for linking a bank receipt to the client
+  ledger and payment schedule, but the exact joins still require row-level
+  confirmation.
+- Aggregation identified bank-origin client ledger rows as `MODULENR=7`:
+  `SIGN=1/TRCODE=20` and `SIGN=0/TRCODE=21`. Every such row has
+  `SOURCEFREF` and `BANKACCREF`, while `PAYMENTREF`, `BNACCREF` and
+  `EXTENREF` are zero. This supports bank-account identification but suggests
+  that invoice allocation is not recorded through `CLFLINE.PAYMENTREF` in
+  this database.
+- Row-level joins confirmed the actual bank receipt path:
+  `BNFICHE(TRCODE=3) -> BNFLINE(TRCODE=3, TRANSTYPE=1, SIGN=0) ->`
+  `CLFLINE(MODULENR=7, TRCODE=20, SIGN=1)`. The joins are
+  `BNFLINE.SOURCEFREF = BNFICHE.LOGICALREF` and
+  `CLFLINE.SOURCEFREF = BNFLINE.LOGICALREF`; amounts, clients and bank
+  accounts match. This is sufficient to validate a future LObjects-created
+  bank receipt, but it does not yet prove invoice-level allocation.
+- `LOGICALREF` values are table-local. The bank-to-ledger join must include
+  both `CLFLINE.MODULENR=7` and
+  `CLFLINE.SOURCEFREF=BNFLINE.LOGICALREF`; omitting the module can produce
+  false matches to invoice ledger rows. A `BNFICHE` may also contain lines
+  for multiple bank accounts, so provider mapping belongs on each
+  `BNFLINE.BNACCREF`.
+- The corrected join was validated over all 37 lines of `BNFICHE=756`: every
+  bank line had one module-7 client ledger row, every amount matched, and the
+  line sum `4,471,080.67` equaled `BNFICHE.DEBITTOT`. The document contained
+  three bank accounts, confirming that bank selection is a line-level field.
+- A client-ledger timeline confirmed that invoice rows use
+  `MODULENR=4/TRCODE=38/SIGN=0` with
+  `CLFLINE.SOURCEFREF = INVOICE.LOGICALREF`, while bank receipts remain
+  separate `MODULENR=7` rows. `PAYMENTREF` is zero on both sides and receipt
+  amounts are not tied to one invoice. PaymentGateway must therefore remain
+  the source of truth for invoice payment status; Tiger receives the resulting
+  bank receipt unless an additional Tiger allocation mechanism is explicitly
+  identified.
+- LObjects exposes `DebtClose`, `DebtCloseFIFO` and `RollBackDebtClose`.
+  Video inspection confirmed that `DebtClose` receives two
+  `PAYTRANS.LOGICALREF` values plus amount and exchange rates. It must not be
+  called with invoice or bank-voucher references and remains a write operation.
+- Provider mapping must use an approved `BANK_ACCOUNT_CODE`, not a substring of
+  the bank/account display name.
 
 No document write was tested.
 
+The exact LObjects object type is now confirmed from the installed type
+library: `DataObjectType.doBankVoucher = 24`. This is the object that must be
+used for the future `BNFICHE/BNFLINE` write; `doBank=22` and
+`doBankAccount=23` are master-data objects.
+
+An in-memory smoke test against test firm `923`, period `1`, confirmed that
+`NewDataObject(24)` and `IData.New()` work. No `Post()` was called. The object
+exposes `DataFields`, validation/error collections, XML import/export and
+`Post()`, while `IDataFields` exposes indexed and named field access.
+
+A controlled write test then succeeded in test firm `923`, period `1`:
+`doBankVoucher=24`, header `TYPE=3`, one incoming line with
+`TYPE=1/TRCODE=3/MODULENR=7/SIGN=0`, amount `1`, client code
+`120.04.2.02.4456` and bank account code `10202 102.01.001`. LObjects returned
+`LOGICALREF=1002`, `FICHENO=00000005`, with zero validation errors and warnings.
+No direct SQL write was used.
+
+However, a subsequent `IData.Read(1002)` returned zero transaction lines. The
+test therefore proves header creation only, not a complete bank receipt.
+`AppendLine2()` must be replaced with `AppendLine()` plus `Lines.Item(0)`, and
+the persisted line count must be verified before enabling worker writes.
+
+İvmebilişim independently confirmed the intermediate-service architecture:
+external data is sent according to field rules, and a Logo Objects layer
+periodically creates the appropriate Tiger voucher. Our deployment uses an
+outbound pull from the internal Windows worker to PaymentGateway, avoiding any
+public inbound access to the Tiger server.
+
+The supplied C# source samples do not contain a bank-voucher implementation,
+but they confirm the supported collection pattern: `AppendLine()` followed by
+`Lines[Lines.Count - 1]`, named field assignment, `Post()` and
+`ValidateErrors`. They also confirm XML string import/export. The next safest
+discovery step is therefore a read-only XML export of an existing valid bank
+voucher from the installed Tiger version. Official Polaris documentation
+confirms its XML root as `BANK_VOUCHERS` (REST resource `bankVouchers`). Use
+`Read(LOGICALREF)` followed by `ExportToXMLStr("BANK_VOUCHERS", ...)`.
+
+Polaris also confirms that `AppendLine()` is the supported line-creation
+method and returns `Boolean`; the new row must be accessed as
+`Lines[Lines.Count - 1]`. Reference fields must be addressed by LObjects
+`FieldByName`, not database field names. On a failed `Post()`, inspect database
+errors and `ValidateErrors` before reporting the event as failed.
+
+Logo Objects licensing is server-based but requires an installed runtime
+license. Error `-13` means the entitlement is missing and `-93` means the
+terminal limit was exceeded. Serialize COM work in one dedicated Tiger
+session. After `Post()`, call `Read(LOGICALREF)` again and verify persisted
+`TRANSACTIONS` before acknowledging the PaymentGateway event. Persist both
+numeric and textual errors because identifiers/messages can differ by version
+and locale.
+
 Detailed progress log: [TIGER_PROGRESS_LOG.md](TIGER_PROGRESS_LOG.md).
+Read-only command log: [TIGER_READONLY_DISCOVERY.md](TIGER_READONLY_DISCOVERY.md).
 
 ## Proposed Contract To Tiger Integration
 
@@ -90,6 +211,18 @@ correct Tiger bank account. Therefore the event contains both:
 - invoice-level fields: `invoiceId`, `invoiceNumber`, `amount`, `paidAt`;
 - winning-payment fields: `paidTransactionId`, `paidProvider`,
   `providerPaymentId`, `targetBankCode`, `targetBankAccountCode`.
+
+Each printable QR configuration stores its own Tiger `BANKACC.CODE`. When 1C
+creates the invoice QR bundle, that account code is copied into the payment
+metadata. The paid QR therefore determines the bank account without guessing
+from the provider name:
+
+```text
+print QR code -> tiger_bank_account_code -> targetBankAccountCode
+-> BANK_VOUCHER.TRANSACTION.BANKACC_CODE
+```
+
+`clientCode` is supplied by 1C as the invoice customer's `CLCARD.CODE`.
 
 Recommended pull endpoint on PaymentGateway:
 
@@ -179,27 +312,23 @@ TigerInvoiceExports
 - ProcessedAt
 ```
 
-## What Must Be Clarified Before Coding Tiger Documents
+## Remaining Clarifications Before Production Writes
 
-The received guide is enough for architecture, but not enough to create real
-Tiger accounting documents. These questions must be answered by the Logo/Tiger
-implementer or accountant:
+The minimal XML payload and full write/read-back path are confirmed in `923/1`.
+One voucher per paid invoice is implemented, and a stable hash of `invoiceId`
+is stored in `NOTES1` for idempotency. Production still requires:
 
-1. Is Logo Objects / LObjects runtime licensed and active?
-2. Where exactly is `LObjects.dll` installed?
-3. Is it registered through `REGISTER.BAT` or `regsvr32`?
-4. Is the DLL 32-bit or 64-bit?
-5. Which firm number and period number should be used?
-6. Which Logo user should the integration use?
-7. Which rights should that user have?
-8. What exact Tiger document type should represent a paid QR invoice?
-9. Which fields are mandatory for that document type?
-10. Which cash, bank, warehouse, department, and currency codes should be used?
-11. How should external payment methods map to Tiger accounts?
-12. Is there a test Tiger database for first writes?
+1. Map every PaymentGateway provider to its real production `BANKACC.CODE`.
+2. Ensure every invoice event contains the corresponding `CLCARD.CODE` as
+   `clientCode`.
+3. Confirm with accounting that `NOTES1` is approved for the immutable marker.
+4. Decide whether the customer-balance receipt is sufficient or whether
+   `DebtClose` allocation to the specific invoice is required.
+5. Create a dedicated Logo user with least-privilege production rights.
+6. Run the deployed C# worker against `923/1` before allowing firm `126`.
 
-Until these are known, PaymentGateway can prepare paid-invoice export events,
-but the Tiger service cannot safely create accounting documents.
+Until those mappings and accounting rules are confirmed, production firm `126`
+remains read-only and must not appear in `AllowedWriteFirmNos`.
 
 ## Implementation Phases
 

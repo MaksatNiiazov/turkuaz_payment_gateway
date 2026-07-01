@@ -172,6 +172,7 @@ class PaymentService:
             return
 
         self.store.upsert_tiger_invoice_export(build_tiger_invoice_event(paid_transaction))
+        self.store.upsert_one_c_payment_export(build_one_c_payment_event(paid_transaction))
 
         related_transactions = self.store.list_invoice_transactions_for_cancel(
             external_invoice_id=external_invoice_id,
@@ -213,6 +214,49 @@ class PaymentService:
 
 
 def build_tiger_invoice_event(transaction: dict) -> dict[str, object]:
+    payment = _paid_payment_fields(transaction)
+    metadata = payment["metadata"]
+    provider = payment["paidProvider"]
+    invoice_id = payment["invoiceId"]
+    invoice_number = payment["invoiceNumber"]
+    target_bank_code = (
+        metadata.get("tiger_bank_code")
+        or metadata.get("print_qr_code")
+        or str(provider).upper()
+    )
+
+    event: dict[str, object] = {
+        "invoiceId": invoice_id,
+        "invoiceNumber": invoice_number,
+        "paidTransactionId": payment["paymentId"],
+        "paidProvider": provider,
+        "providerPaymentId": payment["providerPaymentId"],
+        "targetBankCode": str(target_bank_code).upper(),
+        "targetBankAccountCode": metadata.get("tiger_bank_account_code"),
+        "paidAt": payment["paidAt"],
+        "amountTyiyn": payment["amountTyiyn"],
+        "amount": payment["amount"],
+        "currency": payment["currency"],
+        "clientCode": payment["clientCode"],
+        "clientName": payment["clientName"],
+        "paymentMethod": payment["paymentMethod"],
+        "description": f"QR payment for {invoice_number or invoice_id}",
+    }
+    return {key: value for key, value in event.items() if value is not None}
+
+
+def build_one_c_payment_event(transaction: dict) -> dict[str, object]:
+    payment = _paid_payment_fields(transaction)
+    event = {
+        key: value
+        for key, value in payment.items()
+        if key != "metadata" and value is not None
+    }
+    event["status"] = PAID_STATUS
+    return event
+
+
+def _paid_payment_fields(transaction: dict) -> dict[str, object]:
     metadata = transaction.get("metadata")
     if not isinstance(metadata, dict):
         metadata = {}
@@ -236,20 +280,16 @@ def build_tiger_invoice_event(transaction: dict) -> dict[str, object]:
     amount_tyiyn = transaction.get("amount")
     amount = amount_tyiyn / 100 if isinstance(amount_tyiyn, int) else None
     invoice_number = metadata.get("invoice_number")
-    target_bank_code = (
-        metadata.get("tiger_bank_code")
-        or metadata.get("print_qr_code")
-        or provider.upper()
-    )
+    payment_code = str(metadata.get("print_qr_code") or provider).strip().lower()
 
-    event: dict[str, object] = {
+    return {
+        "metadata": metadata,
+        "paymentId": str(transaction["id"]),
         "invoiceId": invoice_id,
         "invoiceNumber": invoice_number,
-        "paidTransactionId": str(transaction["id"]),
+        "paymentCode": payment_code,
         "paidProvider": provider,
         "providerPaymentId": str(provider_payment_id),
-        "targetBankCode": str(target_bank_code).upper(),
-        "targetBankAccountCode": metadata.get("tiger_bank_account_code"),
         "paidAt": transaction.get("paid_at") or raw_payload.get("paid_at"),
         "amountTyiyn": amount_tyiyn,
         "amount": amount,
@@ -257,6 +297,4 @@ def build_tiger_invoice_event(transaction: dict) -> dict[str, object]:
         "clientCode": metadata.get("client_code") or metadata.get("payer_code"),
         "clientName": metadata.get("client_name") or metadata.get("payer_full_name"),
         "paymentMethod": transaction.get("transaction_type") or "qr",
-        "description": f"QR payment for {invoice_number or invoice_id}",
     }
-    return {key: value for key, value in event.items() if value is not None}

@@ -153,10 +153,15 @@ PAYMENT_PROVIDER_BY_INTEGRATION=1c_obank:odengi,site:mkassa,pos:odengi
 | `GET` | `/api/v1/integration` | Проверить, какой `integration_name` распознан по ключу |
 | `GET` | `/api/v1/local/tiger/invoice-events/pending` | Для Tiger worker: забрать оплаченные счета на экспорт или повтор |
 | `POST` | `/api/v1/local/tiger/invoice-events/{event_id}/result` | Для Tiger worker: сохранить результат экспорта в Tiger |
+| `GET` | `/api/v1/local/1c/payment-events/pending` | Для 1С: забрать успешные оплаты или ошибки для повтора |
+| `POST` | `/api/v1/local/1c/payment-events/{event_id}/result` | Для 1С: подтвердить импорт оплаты или сообщить ошибку |
 | `GET` | `/api/v1/local/transactions/{transaction_id}` | Посмотреть сохраненное локальное состояние |
 | `GET` | `/api/v1/local/transactions/{transaction_id}/tiger-event-preview` | Посмотреть JSON события оплаченного счета для Tiger |
+| `GET` | `/api/v1/local/transactions/{transaction_id}/1c-event-preview` | Посмотреть JSON успешной оплаты для 1С |
 | `GET` | `/api/v1/local/tiger/invoice-events` | Админский список статусов экспорта счетов в Tiger |
 | `POST` | `/api/v1/local/tiger/invoice-events/{event_id}/reset` | Админский сброс события в `pending` для повторной выгрузки |
+| `GET` | `/api/v1/local/1c/payment-events` | Админский список статусов доставки оплат в 1С |
+| `POST` | `/api/v1/local/1c/payment-events/{event_id}/reset` | Админский сброс доставки в `pending` для повторного импорта |
 | `GET` | `/api/v1/local/webhooks` | Посмотреть последние webhook-события |
 | `GET` | `/api/v1/local/access-events` | Посмотреть, какие интеграции обращались к сервису |
 
@@ -181,6 +186,25 @@ invoice, но внутри события будет указано, какой 
 worker отправляет результат в `/api/v1/local/tiger/invoice-events/{event_id}/result`.
 Если нужно выгрузить повторно, админ может сбросить событие endpoint'ом
 `/api/v1/local/tiger/invoice-events/{event_id}/reset`.
+
+### Передача успешных оплат в 1С
+
+Каждая сохраненная транзакция со статусом `paid` и стабильным `invoiceId`
+автоматически попадает в отдельную очередь 1С. Доставка в Tiger и доставка в
+1С подтверждаются независимо: успешный экспорт в одну систему не скрывает
+событие от другой.
+
+1С забирает очередь методом `GET /api/v1/local/1c/payment-events/pending`,
+обрабатывает `event_payload`, затем подтверждает результат через
+`POST /api/v1/local/1c/payment-events/{event_id}/result`. Одна и та же процедура
+1С может вызываться регламентным заданием и кнопкой «Загрузить оплаты».
+
+Ключ идемпотентности для 1С — `paymentId`. Перед созданием документа 1С должна
+проверить, не импортировала ли она этот `paymentId` ранее. `invoiceId` используется
+для поиска исходной реализации. `paymentCode` (`mbank`, `obank`, `qr_3`, `qr_4`)
+выбирает локально настроенный банковский счет 1С; GUID счета через API не
+передается. Полный контракт и примеры запросов:
+[docs/1C_PAYMENT_SYNC.md](docs/1C_PAYMENT_SYNC.md).
 
 ## Примеры
 
@@ -232,5 +256,8 @@ ruff check .
 ```
 
 ## Заметки по интеграции
+
+Памятка по интеграции с Logo Tiger и официальной документации Polaris:
+[docs/TIGER_POLARIS_INTEGRATION_NOTES_RU.md](docs/TIGER_POLARIS_INTEGRATION_NOTES_RU.md).
 
 Суммы передаются в тыйынах. Динамическая QR-транзакция MKassa по умолчанию ждет оплату 60 секунд. O!Dengi dynamic QR создается как одноразовый счет: `long_term=0`, `date_life` выставляется на 24 часа вперед в локальном времени UTC+6. При запросе статуса MKassa может отвечать до 15 секунд, поэтому `REQUEST_TIMEOUT_READ` по умолчанию выставлен в 20 секунд.

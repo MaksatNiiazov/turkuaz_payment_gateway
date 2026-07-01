@@ -47,7 +47,11 @@ from payment_gateway.providers.odengi import (
     ODengiProvider,
     ODengiTransportError,
 )
-from payment_gateway.service import PaymentService, build_tiger_invoice_event
+from payment_gateway.service import (
+    PaymentService,
+    build_one_c_payment_event,
+    build_tiger_invoice_event,
+)
 from payment_gateway.store import PaymentStore
 
 
@@ -55,6 +59,12 @@ class TigerInvoiceExportResult(APIModel):
     success: bool
     tiger_logical_ref: str | None = None
     tiger_fiche_no: str | None = None
+    error_message: str | None = None
+
+
+class OneCPaymentExportResult(APIModel):
+    success: bool
+    one_c_document_id: str | None = None
     error_message: str | None = None
 
 
@@ -968,6 +978,50 @@ def create_app(
             )
         return item
 
+    @protected_router.get(
+        "/local/1c/payment-events/pending",
+        tags=["local"],
+        summary="List pending 1C payment events",
+        description=(
+            "Used by the 1C scheduled job or manual sync command. Returns successful "
+            "payments that 1C has not acknowledged yet, including failed attempts for retry."
+        ),
+    )
+    async def one_c_pending_payment_events(
+        request: Request,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    ) -> list[dict]:
+        return storage(request).list_one_c_payment_exports(
+            limit=limit,
+            statuses={"pending", "error"},
+        )
+
+    @protected_router.post(
+        "/local/1c/payment-events/{event_id}/result",
+        tags=["local"],
+        summary="Save 1C payment processing result",
+        description=(
+            "Used by 1C to acknowledge an imported payment or report an error for retry."
+        ),
+    )
+    async def one_c_payment_event_result(
+        request: Request,
+        event_id: int,
+        payload: OneCPaymentExportResult,
+    ) -> dict:
+        item = storage(request).update_one_c_payment_export_result(
+            event_id,
+            status="success" if payload.success else "error",
+            one_c_document_id=payload.one_c_document_id,
+            error_message=payload.error_message,
+        )
+        if item is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="1C payment export event not found",
+            )
+        return item
+
     @protected_router.post(
         "/invoice/qr-codes",
         response_model=InvoiceQRCodeBundleResponse,
@@ -990,6 +1044,17 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="No enabled print QR codes are configured",
+            )
+        missing_tiger_accounts = [
+            item.code for item in configured_items if not item.tiger_bank_account_code
+        ]
+        if missing_tiger_accounts:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Tiger bank account is not configured for QR codes: "
+                    + ", ".join(sorted(missing_tiger_accounts))
+                ),
             )
 
         response_items: list[InvoiceQRCodeItem] = []
@@ -1103,6 +1168,26 @@ def create_app(
         return build_tiger_payment_event_preview(item)
 
     @admin_router.get(
+        "/local/transactions/{transaction_id}/1c-event-preview",
+        tags=["local"],
+        summary="Preview 1C successful-payment event",
+        description="Builds the payment event that 1C receives. It does not send anything.",
+    )
+    async def local_transaction_one_c_event_preview(
+        request: Request,
+        transaction_id: str,
+    ) -> dict:
+        item = storage(request).get_transaction(transaction_id)
+        if item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+        if item.get("status") != "paid":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Only paid transactions can be exported to 1C",
+            )
+        return build_one_c_payment_event(item)
+
+    @admin_router.get(
         "/local/tiger/invoice-events",
         tags=["local"],
         summary="List Tiger invoice export events",
@@ -1134,6 +1219,38 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Tiger invoice export event not found",
+            )
+        return item
+
+    @admin_router.get(
+        "/local/1c/payment-events",
+        tags=["local"],
+        summary="List 1C payment export events",
+        description="Admin-only list of successful-payment delivery statuses for 1C.",
+    )
+    async def local_one_c_payment_events(
+        request: Request,
+        limit: Annotated[int, Query(ge=1, le=500)] = 50,
+        status_filter: Annotated[
+            str | None,
+            Query(alias="status", description="Optional 1C export status filter."),
+        ] = None,
+    ) -> list[dict]:
+        statuses = {status_filter} if status_filter else None
+        return storage(request).list_one_c_payment_exports(limit=limit, statuses=statuses)
+
+    @admin_router.post(
+        "/local/1c/payment-events/{event_id}/reset",
+        tags=["local"],
+        summary="Reset 1C payment export event",
+        description="Admin-only reset to pending so 1C can import the payment again.",
+    )
+    async def reset_local_one_c_payment_event(request: Request, event_id: int) -> dict:
+        item = storage(request).reset_one_c_payment_export(event_id)
+        if item is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="1C payment export event not found",
             )
         return item
 
@@ -1386,13 +1503,14 @@ def build_invoice_qr_metadata(
     item: PrintQRCodeConfigItem,
 ) -> dict[str, str]:
     metadata = {
-        "source": payload.source,
         "invoice_id": payload.invoice_id,
         "print_qr_code": item.code,
-        "print_qr_slot": str(item.slot),
+        "client_code": payload.client_code,
     }
     if payload.invoice_number:
         metadata["invoice_number"] = payload.invoice_number
+    if item.tiger_bank_account_code:
+        metadata["tiger_bank_account_code"] = item.tiger_bank_account_code
     return metadata
 
 

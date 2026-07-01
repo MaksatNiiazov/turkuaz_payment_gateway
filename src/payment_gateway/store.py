@@ -40,6 +40,7 @@ DEFAULT_PRINT_QR_CODES = [
         "enabled": True,
         "slot": 1,
         "sort_order": 10,
+        "tiger_bank_account_code": None,
     },
     {
         "code": "obank",
@@ -48,6 +49,7 @@ DEFAULT_PRINT_QR_CODES = [
         "enabled": True,
         "slot": 2,
         "sort_order": 20,
+        "tiger_bank_account_code": None,
     },
     {
         "code": "qr_3",
@@ -56,6 +58,7 @@ DEFAULT_PRINT_QR_CODES = [
         "enabled": False,
         "slot": 3,
         "sort_order": 30,
+        "tiger_bank_account_code": None,
     },
     {
         "code": "qr_4",
@@ -64,6 +67,7 @@ DEFAULT_PRINT_QR_CODES = [
         "enabled": False,
         "slot": 4,
         "sort_order": 40,
+        "tiger_bank_account_code": None,
     },
 ]
 FIXED_PRINT_QR_CODE_CODES = tuple(item["code"] for item in DEFAULT_PRINT_QR_CODES)
@@ -126,6 +130,7 @@ print_qr_codes = Table(
     Column("enabled", Boolean, nullable=False, default=True),
     Column("slot", Integer, nullable=False, default=1),
     Column("sort_order", Integer, nullable=False, default=100),
+    Column("tiger_bank_account_code", String(64)),
     Column("created_at", String(64), nullable=False),
     Column("updated_at", String(64), nullable=False),
 )
@@ -156,6 +161,30 @@ tiger_invoice_exports = Table(
     UniqueConstraint("invoice_id", name="uq_tiger_invoice_exports_invoice_id"),
 )
 
+one_c_payment_exports = Table(
+    "one_c_payment_exports",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("payment_id", String(128), nullable=False),
+    Column("invoice_id", String(150), nullable=False),
+    Column("invoice_number", String(150)),
+    Column("payment_code", String(64)),
+    Column("paid_provider", String(32), nullable=False),
+    Column("provider_payment_id", String(150)),
+    Column("amount", Integer),
+    Column("currency", String(16)),
+    Column("status", String(32), nullable=False, default="pending"),
+    Column("event_payload", Text, nullable=False),
+    Column("one_c_document_id", String(150)),
+    Column("error_message", Text),
+    Column("attempt_count", Integer, nullable=False, default=0),
+    Column("last_attempt_at", String(64)),
+    Column("exported_at", String(64)),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    UniqueConstraint("payment_id", name="uq_one_c_payment_exports_payment_id"),
+)
+
 Index("idx_transactions_provider_status", transactions.c.provider, transactions.c.status)
 Index("idx_transactions_external_invoice_id", transactions.c.external_invoice_id)
 Index("idx_transactions_updated_at", transactions.c.updated_at)
@@ -166,6 +195,8 @@ Index("idx_api_access_events_created_at", api_access_events.c.created_at)
 Index("idx_print_qr_codes_enabled_sort", print_qr_codes.c.enabled, print_qr_codes.c.sort_order)
 Index("idx_tiger_invoice_exports_status", tiger_invoice_exports.c.status)
 Index("idx_tiger_invoice_exports_updated_at", tiger_invoice_exports.c.updated_at)
+Index("idx_one_c_payment_exports_status", one_c_payment_exports.c.status)
+Index("idx_one_c_payment_exports_updated_at", one_c_payment_exports.c.updated_at)
 
 
 class PaymentStore:
@@ -249,7 +280,7 @@ class PaymentStore:
             "paid_at": self._serialize_value(paid_at),
             "payment_token": payment_token,
             "static_qr_link": static_qr_link,
-            "metadata": self._json_dumps(metadata),
+            "metadata": self._json_dumps(metadata) if metadata is not None else None,
             "raw_payload": self._json_dumps(raw_payload or {}),
             "updated_at": now,
         }
@@ -272,6 +303,11 @@ class PaymentStore:
                 for key, value in values.items()
                 if key not in {"id", "raw_payload", "updated_at"}
             }
+            if metadata is not None:
+                existing_metadata = self._json_loads(existing["metadata"])
+                merged_metadata = existing_metadata if isinstance(existing_metadata, dict) else {}
+                merged_metadata.update(metadata)
+                merged["metadata"] = self._json_dumps(merged_metadata)
             merged["raw_payload"] = values["raw_payload"]
             merged["updated_at"] = values["updated_at"]
             connection.execute(
@@ -441,6 +477,9 @@ class PaymentStore:
                         enabled=bool(item["enabled"]),
                         slot=int(item["slot"]),
                         sort_order=int(item["sort_order"]),
+                        tiger_bank_account_code=self._clean_string(
+                            item.get("tiger_bank_account_code")
+                        ),
                         created_at=now,
                         updated_at=now,
                     )
@@ -610,6 +649,160 @@ class PaymentStore:
             ).mappings().one()
             return self._tiger_invoice_export_row_to_dict(row)
 
+    def upsert_one_c_payment_export(self, event: dict[str, Any]) -> dict[str, Any]:
+        payment_id = self._clean_string(event.get("paymentId"))
+        invoice_id = self._clean_string(event.get("invoiceId"))
+        paid_provider = self._clean_string(event.get("paidProvider"))
+        if not payment_id:
+            raise ValueError("paymentId is required")
+        if not invoice_id:
+            raise ValueError("invoiceId is required")
+        if not paid_provider:
+            raise ValueError("paidProvider is required")
+
+        now = self._now()
+        values = {
+            "invoice_id": invoice_id,
+            "invoice_number": self._clean_string(event.get("invoiceNumber")),
+            "payment_code": self._clean_string(event.get("paymentCode")),
+            "paid_provider": paid_provider,
+            "provider_payment_id": self._clean_string(event.get("providerPaymentId")),
+            "amount": self._parse_int(event.get("amountTyiyn")),
+            "currency": self._clean_string(event.get("currency")),
+            "event_payload": self._json_dumps(event),
+            "updated_at": now,
+        }
+        insert_values = {
+            **values,
+            "payment_id": payment_id,
+            "status": "pending",
+            "attempt_count": 0,
+            "created_at": now,
+        }
+
+        with self.engine.begin() as connection:
+            existing = connection.execute(
+                select(one_c_payment_exports).where(
+                    one_c_payment_exports.c.payment_id == payment_id
+                )
+            ).mappings().first()
+            if existing is None:
+                try:
+                    result = connection.execute(
+                        one_c_payment_exports.insert().values(**insert_values)
+                    )
+                    event_id = result.inserted_primary_key[0]
+                except IntegrityError:
+                    existing = connection.execute(
+                        select(one_c_payment_exports).where(
+                            one_c_payment_exports.c.payment_id == payment_id
+                        )
+                    ).mappings().first()
+                else:
+                    row = connection.execute(
+                        select(one_c_payment_exports).where(
+                            one_c_payment_exports.c.id == event_id
+                        )
+                    ).mappings().one()
+                    return self._one_c_payment_export_row_to_dict(row)
+
+            if existing is None:
+                raise RuntimeError("Failed to create or load 1C payment export")
+
+            if existing["status"] == "success":
+                return self._one_c_payment_export_row_to_dict(existing)
+
+            connection.execute(
+                one_c_payment_exports.update()
+                .where(one_c_payment_exports.c.id == existing["id"])
+                .values(**values)
+            )
+            row = connection.execute(
+                select(one_c_payment_exports).where(
+                    one_c_payment_exports.c.id == existing["id"]
+                )
+            ).mappings().one()
+            return self._one_c_payment_export_row_to_dict(row)
+
+    def list_one_c_payment_exports(
+        self,
+        *,
+        limit: int = 20,
+        statuses: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        capped_limit = min(max(limit, 1), 500)
+        query = (
+            select(one_c_payment_exports)
+            .order_by(one_c_payment_exports.c.created_at, one_c_payment_exports.c.id)
+            .limit(capped_limit)
+        )
+        if statuses:
+            query = query.where(one_c_payment_exports.c.status.in_(statuses))
+
+        with self.engine.begin() as connection:
+            rows = connection.execute(query).mappings()
+            return [self._one_c_payment_export_row_to_dict(row) for row in rows]
+
+    def update_one_c_payment_export_result(
+        self,
+        event_id: int,
+        *,
+        status: str,
+        one_c_document_id: str | None = None,
+        error_message: str | None = None,
+    ) -> dict[str, Any] | None:
+        if status not in {"success", "error"}:
+            raise ValueError("Unsupported 1C export status")
+
+        now = self._now()
+        values: dict[str, Any] = {
+            "status": status,
+            "updated_at": now,
+            "last_attempt_at": now,
+            "attempt_count": one_c_payment_exports.c.attempt_count + 1,
+        }
+        if status == "success":
+            values["exported_at"] = now
+            values["error_message"] = None
+        if one_c_document_id is not None:
+            values["one_c_document_id"] = self._clean_string(one_c_document_id)
+        if error_message is not None or status == "error":
+            values["error_message"] = self._clean_string(error_message)
+
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                one_c_payment_exports.update()
+                .where(one_c_payment_exports.c.id == event_id)
+                .values(**values)
+            )
+            if result.rowcount == 0:
+                return None
+            row = connection.execute(
+                select(one_c_payment_exports).where(one_c_payment_exports.c.id == event_id)
+            ).mappings().one()
+            return self._one_c_payment_export_row_to_dict(row)
+
+    def reset_one_c_payment_export(self, event_id: int) -> dict[str, Any] | None:
+        now = self._now()
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                one_c_payment_exports.update()
+                .where(one_c_payment_exports.c.id == event_id)
+                .values(
+                    status="pending",
+                    one_c_document_id=None,
+                    error_message=None,
+                    exported_at=None,
+                    updated_at=now,
+                )
+            )
+            if result.rowcount == 0:
+                return None
+            row = connection.execute(
+                select(one_c_payment_exports).where(one_c_payment_exports.c.id == event_id)
+            ).mappings().one()
+            return self._one_c_payment_export_row_to_dict(row)
+
     def ensure_default_print_qr_codes(self) -> None:
         with self.engine.begin() as connection:
             existing_codes = {
@@ -749,6 +942,11 @@ class PaymentStore:
                     connection.exec_driver_sql(
                         "UPDATE print_qr_codes SET slot = 2 WHERE code = 'obank'"
                     )
+                if "tiger_bank_account_code" not in print_qr_columns:
+                    connection.exec_driver_sql(
+                        "ALTER TABLE print_qr_codes "
+                        "ADD COLUMN tiger_bank_account_code VARCHAR(64)"
+                    )
                 connection.exec_driver_sql(
                     "CREATE INDEX IF NOT EXISTS idx_print_qr_codes_enabled_sort "
                     "ON print_qr_codes (enabled, sort_order)"
@@ -768,6 +966,26 @@ class PaymentStore:
                 connection.exec_driver_sql(
                     "CREATE INDEX IF NOT EXISTS idx_tiger_invoice_exports_status "
                     "ON tiger_invoice_exports (status)"
+                )
+
+            one_c_export_columns = {
+                row[1]
+                for row in connection.exec_driver_sql(
+                    "PRAGMA table_info(one_c_payment_exports)"
+                ).fetchall()
+            }
+            if one_c_export_columns:
+                if "payment_code" not in one_c_export_columns:
+                    connection.exec_driver_sql(
+                        "ALTER TABLE one_c_payment_exports ADD COLUMN payment_code TEXT"
+                    )
+                connection.exec_driver_sql(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_one_c_payment_exports_payment_id "
+                    "ON one_c_payment_exports (payment_id)"
+                )
+                connection.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS idx_one_c_payment_exports_status "
+                    "ON one_c_payment_exports (status)"
                 )
 
     @staticmethod
@@ -809,6 +1027,28 @@ class PaymentStore:
         data = dict(row)
         data["event_payload"] = PaymentStore._json_loads(data.get("event_payload")) or {}
         return data
+
+    @staticmethod
+    def _one_c_payment_export_row_to_dict(row: Any) -> dict[str, Any]:
+        data = dict(row)
+        event_payload = PaymentStore._json_loads(data.get("event_payload")) or {}
+        payment_code = data.get("payment_code") or PaymentStore._legacy_payment_code(
+            data.get("paid_provider")
+        )
+        data["payment_code"] = payment_code
+        if payment_code and "paymentCode" not in event_payload:
+            event_payload["paymentCode"] = payment_code
+        data["event_payload"] = event_payload
+        return data
+
+    @staticmethod
+    def _legacy_payment_code(provider: Any) -> str | None:
+        normalized = PaymentStore._clean_string(provider)
+        if normalized == "mkassa":
+            return "mbank"
+        if normalized == "odengi":
+            return "obank"
+        return normalized
 
     @staticmethod
     def _json_dumps(value: Any) -> str:

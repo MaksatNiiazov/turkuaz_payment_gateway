@@ -1,0 +1,143 @@
+# Загрузка успешных оплат в 1С
+
+## Схема
+
+PaymentGateway автоматически создает событие после того, как webhook банка или
+проверка статуса сохранили транзакцию как `paid`. 1С сама забирает события по
+HTTPS. Входящее подключение к 1С не требуется.
+
+```text
+MKassa / О!Деньги
+        |
+        | webhook: paid
+        v
+PaymentGateway -> очередь 1С <- регламентное задание или кнопка в 1С
+        |
+        +---------------------> отдельная очередь Tiger
+```
+
+Очереди независимы. Ошибка Tiger не блокирует 1С, ошибка 1С не блокирует Tiger.
+
+## Авторизация
+
+Во всех запросах 1С передает только выданный ей ключ:
+
+```http
+X-Integration-Key: secret-for-1c
+```
+
+MKassa API key, имя интеграции и дополнительные заголовки передавать не нужно.
+
+## Получение очереди
+
+```http
+GET /api/v1/local/1c/payment-events/pending?limit=20
+X-Integration-Key: secret-for-1c
+```
+
+Ответ:
+
+```json
+[
+  {
+    "id": 17,
+    "payment_id": "MKSA-1C-RESULT-1",
+    "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
+    "payment_code": "mbank",
+    "status": "pending",
+    "attempt_count": 0,
+    "event_payload": {
+      "paymentId": "MKSA-1C-RESULT-1",
+      "invoiceId": "550e8400-e29b-41d4-a716-446655440000",
+      "invoiceNumber": "TIGER-FACTURE-1001",
+      "paymentCode": "mbank",
+      "paidProvider": "mkassa",
+      "providerPaymentId": "MKSA-1C-RESULT-1",
+      "paidAt": "2026-06-30T10:30:00+06:00",
+      "amountTyiyn": 1500000,
+      "amount": 15000.0,
+      "currency": "KGS",
+      "clientCode": "CARI.001",
+      "paymentMethod": "qr",
+      "status": "paid"
+    }
+  }
+]
+```
+
+`amountTyiyn` — целая сумма в тыйынах и основное поле для учета. `amount`
+передается для удобства отображения. `paymentId` — ключ идемпотентности оплаты,
+`invoiceId` — UUID реализации из 1С. `paymentCode` — стабильный код печатного
+QR (`mbank`, `obank`, `qr_3` или `qr_4`), по которому каждая база 1С выбирает
+собственную локальную ссылку `БанковскийСчет`. GUID банковского счета через API
+не передается.
+
+## Подтверждение результата
+
+После успешной записи в 1С:
+
+```http
+POST /api/v1/local/1c/payment-events/17/result
+X-Integration-Key: secret-for-1c
+Content-Type: application/json
+
+{
+  "success": true,
+  "one_c_document_id": "1C-PAYMENT-1001"
+}
+```
+
+При ошибке:
+
+```http
+POST /api/v1/local/1c/payment-events/17/result
+X-Integration-Key: secret-for-1c
+Content-Type: application/json
+
+{
+  "success": false,
+  "error_message": "Счет с invoiceId не найден"
+}
+```
+
+Событие с ошибкой снова возвращается методом `pending`, поэтому следующий запуск
+может повторить обработку. После успеха событие из `pending` исчезает.
+
+## Один алгоритм для таймера и кнопки
+
+В 1С нужна одна общая процедура, например `ЗагрузитьУспешныеОплаты()`:
+
+1. Запретить параллельный запуск этой процедуры.
+2. Получить до 20 событий из `pending`.
+3. Для каждого события сначала найти ранее импортированный `paymentId`.
+4. Если он уже есть, не создавать дубль, а сразу подтвердить успех.
+5. Иначе найти исходную реализацию по `invoiceId`, выбрать банковский счет по
+   `paymentCode`, записать оплату и сохранить `paymentId` в отдельном реквизите
+   или регистре сведений.
+6. Отправить `success` или текст ошибки в PaymentGateway.
+7. Повторять получение, пока endpoint не вернет пустой массив.
+
+Регламентное задание может вызывать процедуру каждые 1–5 минут. Кнопка
+«Загрузить оплаты» вызывает ту же процедуру вручную и показывает пользователю
+количество успешных записей и ошибок.
+
+Проверка `paymentId` обязательна: если 1С запишет документ, но не успеет отправить
+подтверждение из-за обрыва сети, PaymentGateway выдаст событие повторно.
+
+## Администрирование
+
+Статусы доставки доступны администратору:
+
+```http
+GET /api/v1/local/1c/payment-events
+Authorization: Bearer <identity_access_token>
+```
+
+Сброс успешного или ошибочного события для повторной выдачи:
+
+```http
+POST /api/v1/local/1c/payment-events/17/reset
+Authorization: Bearer <identity_access_token>
+```
+
+Повтор после сброса все равно безопасен только при проверке `paymentId` в 1С.
