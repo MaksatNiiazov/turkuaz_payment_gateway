@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AppShell,
   fetchServiceRegistry,
@@ -1120,6 +1120,7 @@ function QueuesPanel({
 }) {
   const tigerPending = tigerEvents.filter((event) => event.status === "pending" || event.status === "error").length;
   const oneCPending = oneCEvents.filter((event) => event.status === "pending" || event.status === "error").length;
+  const [activeQueue, setActiveQueue] = useState<"tiger" | "1c">("tiger");
 
   return (
     <section className="queues-panel">
@@ -1175,33 +1176,45 @@ function QueuesPanel({
         </div>
       </section>
 
-      <div className="queue-grid">
-        <QueueCard title="Tiger">
+      <section className="queue-tabs" aria-label="Очереди отправки">
+        <button
+          className={activeQueue === "tiger" ? "active" : ""}
+          type="button"
+          onClick={() => setActiveQueue("tiger")}
+        >
+          Tiger
+          <span>{tigerPending}</span>
+        </button>
+        <button
+          className={activeQueue === "1c" ? "active" : ""}
+          type="button"
+          onClick={() => setActiveQueue("1c")}
+        >
+          1С
+          <span>{oneCPending}</span>
+        </button>
+      </section>
+
+      <section className="queue-card">
+        <div className="queue-card-header">
+          <h2>{activeQueue === "tiger" ? "Очередь Tiger" : "Очередь 1С"}</h2>
+        </div>
+        <div className="queue-table-wrap">
+          {activeQueue === "tiger" ? (
           <TigerQueueTable
             events={tigerEvents}
             resettingKey={resettingKey}
             onReset={onResetTiger}
           />
-        </QueueCard>
-        <QueueCard title="1С">
+          ) : (
           <OneCQueueTable
             events={oneCEvents}
             resettingKey={resettingKey}
             onReset={onResetOneC}
           />
-        </QueueCard>
-      </div>
-    </section>
-  );
-}
-
-function QueueCard({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="queue-card">
-      <div className="queue-card-header">
-        <h2>{title}</h2>
-      </div>
-      <div className="queue-table-wrap">{children}</div>
+          )}
+        </div>
+      </section>
     </section>
   );
 }

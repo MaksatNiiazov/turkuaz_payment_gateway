@@ -203,14 +203,50 @@
   gap: 16px;
 }
 
-.queue-grid {
-  display: grid;
-  gap: 16px;
-}
-
 .queue-card {
   display: grid;
   gap: 10px;
+}
+
+.queue-tabs {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border, #d7dee8);
+  border-radius: 8px;
+  background: var(--surface-muted, #f4f7f9);
+}
+
+.queue-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  padding: 9px 12px;
+  background: transparent;
+  color: var(--text-muted, #64748b);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.queue-tabs button.active {
+  background: var(--surface, #ffffff);
+  color: var(--text, #0f172a);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 10%);
+}
+
+.queue-tabs span {
+  min-width: 24px;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: color-mix(in srgb, var(--teal, #0f766e) 12%, transparent);
+  color: var(--teal, #0f766e);
+  font-size: 12px;
+  text-align: center;
 }
 
 .queue-card-header {
