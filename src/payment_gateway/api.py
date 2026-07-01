@@ -1036,9 +1036,59 @@ def create_app(
         request: Request,
         payload: InvoiceQRCodeCreate,
     ) -> InvoiceQRCodeBundleResponse:
+        store = storage(request)
+        all_configured_items = [
+            PrintQRCodeConfigItem.model_validate(item)
+            for item in store.list_print_qr_codes(enabled_only=False)
+        ]
+        configured_by_code = {item.code: item for item in all_configured_items}
+        paid_transactions = store.list_transactions(
+            limit=100,
+            external_invoice_id=payload.invoice_id,
+            status="paid",
+        )
+        paid_response_items: list[InvoiceQRCodeItem] = []
+        for transaction in paid_transactions:
+            metadata = transaction.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            paid_code = metadata.get("print_qr_code")
+            if not isinstance(paid_code, str) or not paid_code.strip():
+                continue
+            item = configured_by_code.get(paid_code.strip())
+            if item is None:
+                continue
+            refreshed = store.merge_transaction_metadata(
+                str(transaction["id"]),
+                build_invoice_qr_metadata(payload, item),
+            )
+            transaction = refreshed or transaction
+            transaction_id = str(transaction["id"])
+            paid_response_items.append(
+                InvoiceQRCodeItem(
+                    code=item.code,
+                    label=item.label,
+                    provider=item.provider,
+                    slot=item.slot,
+                    transaction_id=transaction_id,
+                    status=transaction.get("status"),
+                    amount=transaction.get("amount"),
+                    image_path=f"/api/v1/qr/render/transaction/{transaction_id}",
+                    reused=True,
+                )
+            )
+
+        if paid_response_items:
+            paid_response_items.sort(key=lambda item: (item.slot, item.code))
+            return InvoiceQRCodeBundleResponse(
+                invoice_id=payload.invoice_id,
+                invoice_number=payload.invoice_number,
+                items=paid_response_items,
+            )
+
         configured_items = [
             PrintQRCodeConfigItem.model_validate(item)
-            for item in storage(request).list_print_qr_codes(enabled_only=True)
+            for item in store.list_print_qr_codes(enabled_only=True)
         ]
         if not configured_items:
             raise HTTPException(

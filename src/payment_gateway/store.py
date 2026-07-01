@@ -433,6 +433,47 @@ class PaymentStore:
                     return item
         return None
 
+    def merge_transaction_metadata(
+        self,
+        transaction_id: str,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not metadata:
+            return self.get_transaction(transaction_id)
+
+        now = self._now()
+        with self.engine.begin() as connection:
+            existing = connection.execute(
+                select(transactions).where(transactions.c.id == transaction_id)
+            ).mappings().first()
+            if existing is None:
+                return None
+
+            existing_metadata = self._json_loads(existing["metadata"])
+            merged_metadata = existing_metadata if isinstance(existing_metadata, dict) else {}
+            merged_metadata.update(metadata)
+
+            existing_raw_payload = self._json_loads(existing["raw_payload"]) or {}
+            if isinstance(existing_raw_payload, dict):
+                raw_metadata = existing_raw_payload.get("metadata")
+                merged_raw_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                merged_raw_metadata.update(metadata)
+                existing_raw_payload["metadata"] = merged_raw_metadata
+
+            connection.execute(
+                transactions.update()
+                .where(transactions.c.id == transaction_id)
+                .values(
+                    metadata=self._json_dumps(merged_metadata),
+                    raw_payload=self._json_dumps(existing_raw_payload),
+                    updated_at=now,
+                )
+            )
+            row = connection.execute(
+                select(transactions).where(transactions.c.id == transaction_id)
+            ).mappings().one()
+            return self._transaction_row_to_dict(row)
+
     def list_invoice_transactions_for_cancel(
         self,
         *,

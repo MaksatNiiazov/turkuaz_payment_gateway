@@ -562,6 +562,249 @@ def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: 
     }
 
 
+def test_invoice_qr_reuse_refreshes_existing_metadata(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    store.initialize()
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    store.upsert_transaction(
+        transaction_id=invoice_id,
+        status="waiting",
+        transaction_type="qr",
+        amount=1500000,
+        external_invoice_id=invoice_id,
+        metadata={
+            "invoice_id": invoice_id,
+            "invoice_number": "TIGER-1001",
+            "print_qr_code": "obank",
+            "print_qr_slot": "2",
+            "source": "1c",
+        },
+        raw_payload={
+            "id": invoice_id,
+            "metadata": {
+                "invoice_id": invoice_id,
+                "print_qr_code": "obank",
+                "print_qr_slot": "2",
+                "source": "1c",
+            },
+        },
+        provider="odengi",
+    )
+    mkassa = FakeProvider("mkassa", "MBANK-1")
+    odengi = FakeProvider("odengi", "OBANK-1")
+    app = create_app(
+        settings=make_multi_provider_settings(db_path),
+        providers=[mkassa, odengi],
+        store=store,
+    )
+
+    with TestClient(app) as client:
+        configured = client.put(
+            "/api/v1/admin/print-qr-codes",
+            headers={"X-Admin-Key": "admin-secret"},
+            json={
+                "items": [
+                    {
+                        "code": "obank",
+                        "label": "О!Банк",
+                        "provider": "odengi",
+                        "enabled": True,
+                        "slot": 2,
+                        "sort_order": 10,
+                        "tiger_bank_account_code": "102.OBANK",
+                    },
+                    {
+                        "code": "mbank",
+                        "label": "MBank",
+                        "provider": "mkassa",
+                        "enabled": False,
+                        "slot": 1,
+                        "sort_order": 20,
+                        "tiger_bank_account_code": None,
+                    },
+                    {
+                        "code": "qr_3",
+                        "label": "QR 3",
+                        "provider": "mkassa",
+                        "enabled": False,
+                        "slot": 3,
+                        "sort_order": 30,
+                        "tiger_bank_account_code": None,
+                    },
+                    {
+                        "code": "qr_4",
+                        "label": "QR 4",
+                        "provider": "odengi",
+                        "enabled": False,
+                        "slot": 4,
+                        "sort_order": 40,
+                        "tiger_bank_account_code": None,
+                    },
+                ]
+            },
+        )
+        response = client.post(
+            "/api/v1/invoice/qr-codes",
+            headers={"X-Integration-Key": "mkassa-secret"},
+            json={
+                "amount": 1500000,
+                "invoice_id": invoice_id,
+                "invoice_number": "TIGER-1001",
+                "client_code": "120.TEST.001",
+            },
+        )
+        saved = client.get(
+            f"/api/v1/local/transactions/{invoice_id}",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert configured.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["items"][0]["reused"] is True
+    assert odengi.dynamic_create_count == 0
+    assert saved.status_code == 200
+    assert saved.json()["metadata"] == {
+        "invoice_id": invoice_id,
+        "invoice_number": "TIGER-1001",
+        "print_qr_code": "obank",
+        "print_qr_slot": "2",
+        "source": "1c",
+        "client_code": "120.TEST.001",
+        "tiger_bank_account_code": "102.OBANK",
+    }
+    assert saved.json()["raw_payload"]["metadata"]["client_code"] == "120.TEST.001"
+    assert saved.json()["raw_payload"]["metadata"]["tiger_bank_account_code"] == "102.OBANK"
+
+
+def test_invoice_qr_for_paid_invoice_returns_only_paid_codes(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    store.initialize()
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    store.upsert_transaction(
+        transaction_id="MBANK-PAID",
+        status="paid",
+        transaction_type="qr",
+        amount=1500000,
+        external_invoice_id=invoice_id,
+        metadata={
+            "invoice_id": invoice_id,
+            "invoice_number": "TIGER-1001",
+            "print_qr_code": "mbank",
+        },
+        raw_payload={
+            "id": "MBANK-PAID",
+            "metadata": {
+                "invoice_id": invoice_id,
+                "print_qr_code": "mbank",
+            },
+        },
+        provider="mkassa",
+    )
+    store.upsert_transaction(
+        transaction_id="OBANK-WAITING",
+        status="waiting",
+        transaction_type="qr",
+        amount=1500000,
+        external_invoice_id=invoice_id,
+        metadata={
+            "invoice_id": invoice_id,
+            "invoice_number": "TIGER-1001",
+            "print_qr_code": "obank",
+        },
+        raw_payload={"id": "OBANK-WAITING"},
+        provider="odengi",
+    )
+    mkassa = FakeProvider("mkassa", "MBANK-NEW")
+    odengi = FakeProvider("odengi", "OBANK-NEW")
+    app = create_app(
+        settings=make_multi_provider_settings(db_path),
+        providers=[mkassa, odengi],
+        store=store,
+    )
+
+    with TestClient(app) as client:
+        configured = client.put(
+            "/api/v1/admin/print-qr-codes",
+            headers={"X-Admin-Key": "admin-secret"},
+            json={
+                "items": [
+                    {
+                        "code": "mbank",
+                        "label": "MBank",
+                        "provider": "mkassa",
+                        "enabled": True,
+                        "slot": 1,
+                        "sort_order": 10,
+                        "tiger_bank_account_code": "102.MBANK",
+                    },
+                    {
+                        "code": "obank",
+                        "label": "О!Банк",
+                        "provider": "odengi",
+                        "enabled": True,
+                        "slot": 2,
+                        "sort_order": 20,
+                        "tiger_bank_account_code": "102.OBANK",
+                    },
+                    {
+                        "code": "qr_3",
+                        "label": "QR 3",
+                        "provider": "mkassa",
+                        "enabled": False,
+                        "slot": 3,
+                        "sort_order": 30,
+                        "tiger_bank_account_code": None,
+                    },
+                    {
+                        "code": "qr_4",
+                        "label": "QR 4",
+                        "provider": "odengi",
+                        "enabled": False,
+                        "slot": 4,
+                        "sort_order": 40,
+                        "tiger_bank_account_code": None,
+                    },
+                ]
+            },
+        )
+        response = client.post(
+            "/api/v1/invoice/qr-codes",
+            headers={"X-Integration-Key": "mkassa-secret"},
+            json={
+                "amount": 1500000,
+                "invoice_id": invoice_id,
+                "invoice_number": "TIGER-1001",
+                "client_code": "120.TEST.001",
+            },
+        )
+        paid = client.get(
+            "/api/v1/local/transactions/MBANK-PAID",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert configured.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["items"] == [
+        {
+            "code": "mbank",
+            "label": "MBank",
+            "provider": "mkassa",
+            "slot": 1,
+            "transaction_id": "MBANK-PAID",
+            "status": "paid",
+            "amount": 1500000,
+            "image_path": "/api/v1/qr/render/transaction/MBANK-PAID",
+            "reused": True,
+        }
+    ]
+    assert mkassa.dynamic_create_count == 0
+    assert odengi.dynamic_create_count == 0
+    assert paid.json()["metadata"]["client_code"] == "120.TEST.001"
+    assert paid.json()["metadata"]["tiger_bank_account_code"] == "102.MBANK"
+
+
 def test_local_admin_endpoints_use_admin_key_not_integration_key(tmp_path: Path) -> None:
     app = create_app(
         settings=make_settings(tmp_path / "app.db"),

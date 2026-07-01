@@ -57,7 +57,11 @@ class PaymentService:
             statuses=REUSABLE_INVOICE_QR_STATUSES,
         )
         if existing is not None:
-            return existing, True
+            merged = self.store.merge_transaction_metadata(
+                str(existing["id"]),
+                payload.metadata or {},
+            )
+            return merged or existing, True
 
         response = await provider.create_dynamic_qr(payload)
         self.store.upsert_transaction_payload(response, provider=provider.name)
