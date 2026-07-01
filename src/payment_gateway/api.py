@@ -1111,7 +1111,11 @@ def create_app(
         for item in configured_items:
             metadata = build_invoice_qr_metadata(payload, item)
             transaction, reused = await payments(request).create_or_reuse_invoice_qr(
-                DynamicQRCreate(amount=payload.amount, metadata=metadata),
+                DynamicQRCreate(
+                    amount=payload.amount,
+                    metadata=metadata,
+                    is_long_living=print_qr_uses_long_living_mkassa(item),
+                ),
                 provider_name=item.provider,
                 invoice_id=payload.invoice_id,
                 print_qr_code=item.code,
@@ -1562,6 +1566,10 @@ def build_invoice_qr_metadata(
     if item.tiger_bank_account_code:
         metadata["tiger_bank_account_code"] = item.tiger_bank_account_code
     return metadata
+
+
+def print_qr_uses_long_living_mkassa(item: PrintQRCodeConfigItem) -> bool | None:
+    return True if item.provider == PROVIDER_MKASSA else None
 
 
 def build_tiger_payment_event_preview(transaction: dict) -> dict[str, object]:

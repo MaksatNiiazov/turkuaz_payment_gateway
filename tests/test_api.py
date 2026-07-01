@@ -553,6 +553,8 @@ def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: 
     assert [item["reused"] for item in second.json()["items"]] == [True, True]
     assert odengi.dynamic_create_count == 1
     assert mkassa.dynamic_create_count == 1
+    assert odengi.last_dynamic_payload.is_long_living is None
+    assert mkassa.last_dynamic_payload.is_long_living is True
     assert odengi.last_dynamic_payload.metadata == {
         "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
         "invoice_number": "TIGER-1001",
