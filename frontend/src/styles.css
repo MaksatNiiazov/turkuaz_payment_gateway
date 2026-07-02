@@ -269,6 +269,30 @@
   min-width: 980px;
 }
 
+.queue-message {
+  max-width: 460px;
+}
+
+.queue-message summary {
+  color: var(--text, #0f172a);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.queue-message pre {
+  max-width: min(72vw, 720px);
+  max-height: 240px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border: 1px solid var(--border, #d7dee8);
+  border-radius: 8px;
+  background: var(--surface-muted, #f4f7f9);
+  color: var(--text, #0f172a);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .muted-inline {
   color: var(--text-muted, #64748b);
   font-size: 12px;

@@ -97,6 +97,37 @@ function statusTone(status?: string | null): string {
   }
 }
 
+function isOneCConfigurationWait(event: OneCPaymentExportEvent): boolean {
+  return (
+    event.status === "error" &&
+    (event.error_message || "").toLowerCase().includes("не настроен счет/касса")
+  );
+}
+
+function oneCStatusLabel(event: OneCPaymentExportEvent): string {
+  if (isOneCConfigurationWait(event)) return "ожидает настройки";
+  return event.status;
+}
+
+function oneCStatusTone(event: OneCPaymentExportEvent): string {
+  if (isOneCConfigurationWait(event)) return "wait";
+  return statusTone(event.status);
+}
+
+function oneCStateText(event: OneCPaymentExportEvent): string {
+  if (isOneCConfigurationWait(event)) {
+    return "Нужно настроить счет в 1С";
+  }
+  return event.error_message ? truncate(event.error_message, 48) : "-";
+}
+
+function oneCFullStateText(event: OneCPaymentExportEvent): string | null {
+  if (isOneCConfigurationWait(event)) {
+    return event.error_message || "Не настроен счет/касса в 1С.";
+  }
+  return event.error_message;
+}
+
 function formatAmount(value: number | null): string {
   if (value === null || Number.isNaN(value)) return "-";
   return `${(value / 100).toLocaleString("ru-RU", {
@@ -1161,7 +1192,7 @@ function QueuesPanel({
         </div>
         <div className="metric">
           <Icon name="activity" size={20} />
-          <span>Tiger pending/error</span>
+          <span>Tiger к обработке</span>
           <strong>{tigerPending}</strong>
         </div>
         <div className="metric">
@@ -1171,7 +1202,7 @@ function QueuesPanel({
         </div>
         <div className="metric">
           <Icon name="activity" size={20} />
-          <span>1С pending/error</span>
+          <span>1С к обработке</span>
           <strong>{oneCPending}</strong>
         </div>
       </section>
@@ -1263,7 +1294,12 @@ function TigerQueueTable({
               <div>{event.tiger_fiche_no || "-"}</div>
               <div className="mono muted-inline">{event.tiger_logical_ref || ""}</div>
             </td>
-            <td>{event.error_message ? truncate(event.error_message, 48) : "-"}</td>
+            <td>
+              <QueueMessageCell
+                fullText={event.error_message}
+                shortText={event.error_message ? truncate(event.error_message, 48) : "-"}
+              />
+            </td>
             <td>
               <button
                 className="icon-action"
@@ -1297,13 +1333,13 @@ function OneCQueueTable({
       <thead>
         <tr>
           <th>ID</th>
-          <th>Status</th>
+          <th>Статус</th>
           <th>Счет</th>
           <th>Оплата</th>
           <th>QR</th>
           <th>Попытки</th>
           <th>Документ 1С</th>
-          <th>Ошибка</th>
+          <th>Состояние</th>
           <th>Действия</th>
         </tr>
       </thead>
@@ -1311,7 +1347,7 @@ function OneCQueueTable({
         {events.map((event) => (
           <tr key={event.id}>
             <td className="mono">#{event.id}</td>
-            <td><span className={`status ${statusTone(event.status)}`}>{event.status}</span></td>
+            <td><span className={`status ${oneCStatusTone(event)}`}>{oneCStatusLabel(event)}</span></td>
             <td>
               <div>{event.invoice_number || "-"}</div>
               <div className="mono muted-inline">{truncate(event.invoice_id, 18)}</div>
@@ -1323,7 +1359,12 @@ function OneCQueueTable({
             <td>{event.payment_code || "-"}</td>
             <td>{event.attempt_count}</td>
             <td>{event.one_c_document_id || "-"}</td>
-            <td>{event.error_message ? truncate(event.error_message, 48) : "-"}</td>
+            <td>
+              <QueueMessageCell
+                fullText={oneCFullStateText(event)}
+                shortText={oneCStateText(event)}
+              />
+            </td>
             <td>
               <button
                 className="icon-action"
@@ -1339,6 +1380,22 @@ function OneCQueueTable({
         ))}
       </tbody>
     </table>
+  );
+}
+
+function QueueMessageCell({
+  fullText,
+  shortText,
+}: {
+  fullText: string | null;
+  shortText: string;
+}) {
+  if (!fullText) return <span>{shortText}</span>;
+  return (
+    <details className="queue-message">
+      <summary>{shortText}</summary>
+      <pre>{fullText}</pre>
+    </details>
   );
 }
 
