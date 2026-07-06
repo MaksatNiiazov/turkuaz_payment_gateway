@@ -81,7 +81,8 @@ public sealed class PaymentGatewayPoller : BackgroundService
                 var events = await _gateway.GetPendingAsync(stoppingToken);
                 foreach (var item in events)
                 {
-                    if (item.EventPayload is null || item.AttemptCount >= Math.Max(1, _options.MaxAttempts))
+                    if (item.EventPayload is null ||
+                        !string.Equals(item.Status, "pending", StringComparison.OrdinalIgnoreCase))
                         continue;
 
                     var result = _logo.ProcessInvoicePaid(item.EventPayload);

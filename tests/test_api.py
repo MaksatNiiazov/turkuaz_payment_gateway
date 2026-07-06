@@ -1282,6 +1282,7 @@ def test_tiger_worker_can_report_success_and_admin_can_reset(tmp_path: Path) -> 
     assert reset.status_code == 200
     assert reset.json()["status"] == "pending"
     assert reset.json()["tiger_logical_ref"] is None
+    assert reset.json()["attempt_count"] == 1
 
 
 def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> None:
@@ -1319,6 +1320,14 @@ def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> No
             json={"success": False, "error_message": "1C document is locked"},
         )
         retry_pending = client.get(
+            "/api/v1/local/1c/payment-events/pending",
+            headers={"X-Integration-Key": "erp-secret"},
+        )
+        retry_reset = client.post(
+            f"/api/v1/local/1c/payment-events/{event_id}/reset",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        reset_pending = client.get(
             "/api/v1/local/1c/payment-events/pending",
             headers={"X-Integration-Key": "erp-secret"},
         )
@@ -1361,8 +1370,11 @@ def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> No
     assert failed_result.status_code == 200
     assert failed_result.json()["status"] == "error"
     assert failed_result.json()["attempt_count"] == 1
-    assert retry_pending.json()[0]["id"] == event_id
-    assert retry_pending.json()[0]["error_message"] == "1C document is locked"
+    assert retry_pending.json() == []
+    assert retry_reset.status_code == 200
+    assert retry_reset.json()["status"] == "pending"
+    assert retry_reset.json()["attempt_count"] == 1
+    assert reset_pending.json()[0]["id"] == event_id
     assert result.status_code == 200
     assert result.json()["status"] == "success"
     assert result.json()["one_c_document_id"] == "1C-PAYMENT-1001"
@@ -1371,6 +1383,7 @@ def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> No
     assert reset.status_code == 200
     assert reset.json()["status"] == "pending"
     assert reset.json()["one_c_document_id"] is None
+    assert reset.json()["attempt_count"] == 2
 
 
 def test_one_c_keeps_each_paid_transaction_while_tiger_keeps_one_invoice(tmp_path: Path) -> None:

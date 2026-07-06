@@ -54,6 +54,9 @@ public sealed class TigerQueueItem
     [JsonPropertyName("attempt_count")]
     public int AttemptCount { get; init; }
 
+    [JsonPropertyName("status")]
+    public string? Status { get; init; }
+
     [JsonPropertyName("event_payload")]
     public InvoicePaidEvent? EventPayload { get; init; }
 }

@@ -941,7 +941,8 @@ def create_app(
         summary="List pending Tiger invoice export events",
         description=(
             "Used by the Tiger worker. Returns invoice-level events for invoices that "
-            "are paid and still need Tiger export or retry."
+            "are paid and currently queued for Tiger export. Failed events must be "
+            "returned to the queue explicitly."
         ),
     )
     async def tiger_pending_invoice_events(
@@ -950,7 +951,7 @@ def create_app(
     ) -> list[dict]:
         return storage(request).list_tiger_invoice_exports(
             limit=limit,
-            statuses={"pending", "error"},
+            statuses={"pending"},
         )
 
     @protected_router.post(
@@ -984,7 +985,8 @@ def create_app(
         summary="List pending 1C payment events",
         description=(
             "Used by the 1C scheduled job or manual sync command. Returns successful "
-            "payments that 1C has not acknowledged yet, including failed attempts for retry."
+            "payments currently queued for 1C. Failed events must be returned to the "
+            "queue explicitly."
         ),
     )
     async def one_c_pending_payment_events(
@@ -993,7 +995,7 @@ def create_app(
     ) -> list[dict]:
         return storage(request).list_one_c_payment_exports(
             limit=limit,
-            statuses={"pending", "error"},
+            statuses={"pending"},
         )
 
     @protected_router.post(

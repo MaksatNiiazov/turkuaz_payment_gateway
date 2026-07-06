@@ -69,8 +69,7 @@ Edit only `appsettings.json`:
     "BaseUrl": "https://payments.example.com",
     "IntegrationKey": "use-a-long-random-secret",
     "PollIntervalMinutes": 30,
-    "BatchSize": 20,
-    "MaxAttempts": 5
+    "BatchSize": 20
   }
 }
 ```

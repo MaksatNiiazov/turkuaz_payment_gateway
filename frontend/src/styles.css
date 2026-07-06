@@ -45,6 +45,67 @@
   font-weight: 800;
 }
 
+.qr-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 24px;
+  border: 1px solid color-mix(in srgb, var(--teal, #0f766e) 28%, var(--border, #d7dee8));
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: color-mix(in srgb, var(--teal, #0f766e) 10%, white);
+  color: var(--teal, #0f766e);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.saved-qr-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border, #d7dee8);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--surface-muted, #f4f7f9);
+}
+
+.saved-qr-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.saved-qr-header > div {
+  min-width: 0;
+}
+
+.saved-qr-header strong {
+  display: block;
+}
+
+.saved-qr-image {
+  width: 220px;
+  justify-self: center;
+}
+
+.saved-qr-compact {
+  min-width: 112px;
+}
+
+.saved-qr-compact summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--teal, #0f766e);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.saved-qr-compact .saved-qr-image {
+  width: 180px;
+  margin-top: 8px;
+}
+
 .provider-toggle {
   display: inline-grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

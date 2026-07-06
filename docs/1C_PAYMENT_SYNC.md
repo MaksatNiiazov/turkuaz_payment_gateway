@@ -57,7 +57,7 @@ X-Integration-Key: secret-for-1c
       "amountTyiyn": 1500000,
       "amount": 15000.0,
       "currency": "KGS",
-      "clientCode": "CARI.001",
+      "clientCode": "120.04.2.02.4456",
       "paymentMethod": "qr",
       "status": "paid"
     }
@@ -70,7 +70,10 @@ X-Integration-Key: secret-for-1c
 `invoiceId` — UUID реализации из 1С. `paymentCode` — стабильный код печатного
 QR (`mbank`, `obank`, `qr_3` или `qr_4`), по которому каждая база 1С выбирает
 собственную локальную ссылку `БанковскийСчет`. GUID банковского счета через API
-не передается.
+не передается. `clientCode` для очереди Tiger должен быть кодом клиента Logo
+Tiger (`LG_<firm>_CLCARD.CODE`), который хранится в 1С в дополнительном
+реквизите контрагента `Tiger Код Клиента`; обычный код 1С вида `00-002401` для
+Tiger не подходит.
 
 ## Подтверждение результата
 
@@ -126,10 +129,10 @@ Content-Type: application/json
 
 ## Модуль 1С
 
-Модуль загрузки оплат находится в корне проекта:
+Модуль загрузки оплат находится в каталоге исходников интеграции 1С:
 
 ```text
-PayQR_1C_PaymentSync_Module.bsl
+integrations/1c/PayQR_1C_PaymentSync_Module.bsl
 ```
 
 Он делает HTTP-обмен с PaymentGateway:
@@ -166,7 +169,7 @@ PayQR_1C_PaymentSync_Module.bsl
 `PayQR_ЗагрузитьОплаты` с модулем из файла:
 
 ```text
-PayQR_1C_LoadPayments_CommandModule.bsl
+integrations/1c/PayQR_1C_LoadPayments_CommandModule.bsl
 ```
 
 Команда только вызывает серверную процедуру:
@@ -174,6 +177,16 @@ PayQR_1C_LoadPayments_CommandModule.bsl
 ```bsl
 PayQR_ЗагрузкаОплат.PayQR_ЗагрузитьУспешныеОплаты();
 ```
+
+Для сверки заполненности кодов Tiger можно добавить отдельную общую команду
+расширения `PayQR_ВыгрузитьКодыTiger` с модулем из файла:
+
+```text
+integrations/1c/PayQR_1C_ExportTigerClientCodes_CommandModule.bsl
+```
+
+Команда выгружает CSV с колонками `Код1С`, `Наименование`,
+`ПолноеНаименование`, `ИНН`, `Родитель`, `TigerКодКлиента`.
 
 ## Что еще нужно уточнить в 1С
 

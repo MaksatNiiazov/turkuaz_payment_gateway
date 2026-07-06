@@ -161,6 +161,10 @@ function canCancelTransaction(transaction: TransactionRow | null): boolean {
   );
 }
 
+function savedQrPayload(transaction: TransactionRow | null): string | null {
+  return transaction?.payment_token || transaction?.static_qr_link || null;
+}
+
 function invoicePaymentMetrics(rows: TransactionRow[]) {
   const paid = rows.filter((item) => item.status === "paid").length;
   const active = rows.filter((item) =>
@@ -831,6 +835,7 @@ function TransactionsTable({
           <th>Type</th>
           <th>Amount</th>
           <th>Счет 1С</th>
+          <th>QR</th>
           <th>Updated</th>
         </tr>
       </thead>
@@ -862,7 +867,7 @@ function TransactionGroupRows({
     <>
       {showGroupHeader && (
         <tr className="transaction-group-row">
-          <td colSpan={7}>
+          <td colSpan={8}>
             <div className="transaction-group-summary">
               <div>
                 <span className="summary-label">Счет 1С</span>
@@ -901,6 +906,7 @@ function TransactionGroupRows({
           <td>{row.transaction_type || "-"}</td>
           <td>{formatAmount(row.amount)}</td>
           <td>{showGroupHeader ? row.metadata?.print_qr_code || "-" : invoiceLabel(row)}</td>
+          <td>{savedQrPayload(row) ? <span className="qr-badge">QR</span> : "-"}</td>
           <td>{formatDate(row.updated_at)}</td>
         </tr>
       ))}
@@ -1088,7 +1094,13 @@ function InvoicePanel({
                   <td className="mono">{truncate(row.id, 30)}</td>
                   <td><span className={`status ${statusTone(row.status)}`}>{row.status || "unknown"}</span></td>
                   <td>{formatAmount(row.amount)}</td>
-                  <td>{row.metadata?.print_qr_code || "-"}</td>
+                  <td>
+                    <SavedQrPreview
+                      compact
+                      label={row.metadata?.print_qr_code || "QR"}
+                      transaction={row}
+                    />
+                  </td>
                   <td>{formatDate(row.updated_at)}</td>
                   <td>
                     <div className="row-actions">
@@ -1428,6 +1440,7 @@ function TransactionDetails({
         <p className="empty-copy">Выберите транзакцию в таблице.</p>
       ) : (
         <>
+          <SavedQrPreview transaction={transaction} />
           <dl>
             <dt>ID</dt>
             <dd className="mono">{transaction.id}</dd>
@@ -1467,6 +1480,69 @@ function TransactionDetails({
         </>
       )}
     </aside>
+  );
+}
+
+function SavedQrPreview({
+  transaction,
+  compact = false,
+  label = "Сохраненный QR",
+}: {
+  transaction: TransactionRow;
+  compact?: boolean;
+  label?: string;
+}) {
+  const payload = savedQrPayload(transaction);
+  if (!payload) {
+    return compact ? <span>-</span> : null;
+  }
+
+  const qrType = transaction.payment_token ? "dynamic" : "static";
+
+  if (compact) {
+    return (
+      <details className="saved-qr-compact">
+        <summary>
+          <Icon name="qr" size={15} />
+          {label}
+        </summary>
+        <SavedQrImage payload={payload} transactionId={transaction.id} />
+      </details>
+    );
+  }
+
+  return (
+    <section className="saved-qr-panel">
+      <div className="saved-qr-header">
+        <div>
+          <span className="summary-label">QR</span>
+          <strong>{qrType === "dynamic" ? "Динамический" : "Статический"}</strong>
+        </div>
+        <span className="qr-badge">{transaction.metadata?.print_qr_code || transaction.provider}</span>
+      </div>
+      <SavedQrImage payload={payload} transactionId={transaction.id} />
+      <a className="qr-link" href={payload} rel="noreferrer" target="_blank">
+        Открыть QR payload
+      </a>
+    </section>
+  );
+}
+
+function SavedQrImage({
+  payload,
+  transactionId,
+}: {
+  payload: string;
+  transactionId: string;
+}) {
+  return (
+    <img
+      alt={`QR для платежа ${transactionId}`}
+      className="qr-image saved-qr-image"
+      height={220}
+      src={qrImageUrl(payload)}
+      width={220}
+    />
   );
 }
 

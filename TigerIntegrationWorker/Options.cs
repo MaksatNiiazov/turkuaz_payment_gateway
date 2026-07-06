@@ -17,5 +17,4 @@ public sealed class GatewayOptions
     public string IntegrationKey { get; set; } = string.Empty;
     public int PollIntervalMinutes { get; set; } = 30;
     public int BatchSize { get; set; } = 20;
-    public int MaxAttempts { get; set; } = 5;
 }
