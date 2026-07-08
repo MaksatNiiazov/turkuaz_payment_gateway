@@ -68,6 +68,9 @@ class OneCPaymentExportResult(APIModel):
     error_message: str | None = None
 
 
+QUEUE_STATUSES = {"pending", "success", "error", "processing", "skipped"}
+
+
 integration_key_scheme = APIKeyHeader(
     name="X-Integration-Key",
     scheme_name="X-Integration-Key",
@@ -1253,11 +1256,11 @@ def create_app(
         request: Request,
         limit: Annotated[int, Query(ge=1, le=500)] = 50,
         status_filter: Annotated[
-            str | None,
-            Query(alias="status", description="Optional Tiger export status filter."),
+            list[str] | None,
+            Query(alias="status", description="Optional repeated Tiger export status filters."),
         ] = None,
     ) -> list[dict]:
-        statuses = {status_filter} if status_filter else None
+        statuses = parse_queue_statuses(status_filter)
         return storage(request).list_tiger_invoice_exports(limit=limit, statuses=statuses)
 
     @admin_router.post(
@@ -1288,11 +1291,11 @@ def create_app(
         request: Request,
         limit: Annotated[int, Query(ge=1, le=500)] = 50,
         status_filter: Annotated[
-            str | None,
-            Query(alias="status", description="Optional 1C export status filter."),
+            list[str] | None,
+            Query(alias="status", description="Optional repeated 1C export status filters."),
         ] = None,
     ) -> list[dict]:
-        statuses = {status_filter} if status_filter else None
+        statuses = parse_queue_statuses(status_filter)
         return storage(request).list_one_c_payment_exports(limit=limit, statuses=statuses)
 
     @admin_router.post(
@@ -1587,6 +1590,23 @@ def build_tiger_payment_event_preview(transaction: dict) -> dict[str, object]:
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
+
+
+def parse_queue_statuses(status_values: list[str] | None) -> set[str] | None:
+    if not status_values:
+        return None
+
+    statuses = {item.strip() for item in status_values if item.strip()}
+    if not statuses:
+        return None
+
+    unsupported = statuses - QUEUE_STATUSES
+    if unsupported:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported queue status: {', '.join(sorted(unsupported))}",
+        )
+    return statuses
 
 
 def render_qr_png(data: str) -> StreamingResponse:

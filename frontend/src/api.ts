@@ -4,6 +4,7 @@ import type {
   OneCPaymentExportEvent,
   PaymentProvider,
   PrintQrCodeConfigItem,
+  QueueStatus,
   TigerInvoiceExportEvent,
   TransactionRow,
   WebhookEvent,
@@ -47,10 +48,16 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
   return data as T;
 }
 
-function params(values: Record<string, string | number | undefined>): string {
+function params(values: Record<string, string | number | readonly string[] | undefined>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(values)) {
-    if (value !== undefined && value !== "") search.set(key, String(value));
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item !== "") search.append(key, item);
+      }
+    } else if (value !== undefined && value !== "") {
+      search.set(key, String(value));
+    }
   }
   return search.toString();
 }
@@ -131,7 +138,7 @@ export function fetchPrintQrCodes(): Promise<PrintQrCodeConfigItem[]> {
 
 export function fetchTigerInvoiceEvents(filters: {
   limit: number;
-  status?: string;
+  status?: QueueStatus[];
 }): Promise<TigerInvoiceExportEvent[]> {
   return requestJson<TigerInvoiceExportEvent[]>(
     `/api/v1/local/tiger/invoice-events?${params(filters)}`,
@@ -147,7 +154,7 @@ export function resetTigerInvoiceEvent(eventId: number): Promise<TigerInvoiceExp
 
 export function fetchOneCPaymentEvents(filters: {
   limit: number;
-  status?: string;
+  status?: QueueStatus[];
 }): Promise<OneCPaymentExportEvent[]> {
   return requestJson<OneCPaymentExportEvent[]>(
     `/api/v1/local/1c/payment-events?${params(filters)}`,

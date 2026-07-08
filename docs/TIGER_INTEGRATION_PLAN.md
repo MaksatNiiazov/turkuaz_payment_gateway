@@ -181,11 +181,21 @@ voucher from the installed Tiger version. Official Polaris documentation
 confirms its XML root as `BANK_VOUCHERS` (REST resource `bankVouchers`). Use
 `Read(LOGICALREF)` followed by `ExportToXMLStr("BANK_VOUCHERS", ...)`.
 
-Polaris also confirms that `AppendLine()` is the supported line-creation
-method and returns `Boolean`; the new row must be accessed as
-`Lines[Lines.Count - 1]`. Reference fields must be addressed by LObjects
-`FieldByName`, not database field names. On a failed `Post()`, inspect database
-errors and `ValidateErrors` before reporting the event as failed.
+Polaris confirms that `AppendLine()` is the generic supported line-creation
+method for building object collections, but controlled `doBankVoucher=24` tests
+showed it must not be used as our production append strategy for already posted
+bank vouchers: the line was added in memory and `Post()` returned true, while
+SQL read-back still showed the original line count. Full XML `DBOP="UPD"` with
+existing lines plus a new line also failed with `DBError=23000`.
+
+The confirmed append strategy for an already posted bank voucher is to let
+Tiger produce the update shape first: `Read(LOGICALREF)`,
+`ExportToXML("BANK_VOUCHERS", file)`, change the exported Tiger XML to
+`DBOP="UPD"`, add the new `TRANSACTION`, update `TOTAL_DEBIT`, then
+`ImportFromXmlStr("BANK_VOUCHERS", xml)` and `Post()`. In `923/1`, this
+increased voucher `1006` from one line/sum `1` to two lines/sum `3`. This makes
+daily grouping by bank technically feasible, provided each append is serialized
+and verified after posting.
 
 Logo Objects licensing is server-based but requires an installed runtime
 license. Error `-13` means the entitlement is missing and `-93` means the

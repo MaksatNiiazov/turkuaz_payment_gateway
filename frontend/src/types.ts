@@ -112,6 +112,8 @@ export type OneCPaymentExportEvent = {
   updated_at: string;
 };
 
+export type QueueStatus = "pending" | "success" | "error";
+
 export type ViewMode =
   | "transactions"
   | "webhooks"

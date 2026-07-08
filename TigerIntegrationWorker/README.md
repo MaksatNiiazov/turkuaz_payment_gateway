@@ -3,8 +3,8 @@
 Small standalone Windows-only C# worker for Logo Tiger / LObjects integration.
 
 This worker must run on the Tiger Windows server where `LObjects.dll` is
-registered. It can poll paid invoice events from PaymentGateway and create one
-incoming bank voucher per invoice through `doBankVoucher=24`.
+registered. It can poll paid invoice events from PaymentGateway and write them
+to grouped incoming bank vouchers through `doBankVoucher=24`.
 
 This is a separate project from the Python/FastAPI PaymentGateway backend. Keep
 it in this folder and deploy it to the Windows Tiger server separately.
@@ -21,15 +21,21 @@ it in this folder and deploy it to the Windows Tiger server separately.
 - background poller - pulls pending events from PaymentGateway and reports the
   resulting Tiger logical reference and fiche number.
 
-The confirmed write path is:
+The confirmed write paths are:
 
 ```text
-ImportFromXmlStr -> Post -> Read(LOGICALREF) -> verify line/PAYMENT_LIST
+new bank/date group:
+ImportFromXmlStr -> Post -> SQL verify line marker/count/sum
+
+existing bank/date group:
+Read(LOGICALREF) -> ExportToXML -> modify exported XML -> ImportFromXmlStr
+-> Post -> SQL verify line marker/count/sum
 ```
 
 The worker serializes all COM operations. A stable hash of `invoiceId` is stored
-in `BNFICHE.GENEXP1` through `NOTES1`; it is checked before each write to avoid
-duplicate vouchers after a network failure.
+on each `BNFLINE.LINEEXP` through `TRANSACTION.DESCRIPTION`; it is checked
+before each write and again after export to avoid duplicate lines after retries.
+`BNFICHE.GENEXP1` stores the group marker for `bank account + document date`.
 
 ## Install .NET SDK
 
@@ -189,12 +195,26 @@ DataObjectType: doBankVoucher (24)
 XML root: BANK_VOUCHERS
 REST resource: bankVouchers
 Line collection: TRANSACTIONS
-Line append method: AppendLine()
+Line creation while building a new object: AppendLine()
 ```
 
 For an existing voucher, call `Read(LOGICALREF)` before
 `ExportToXMLStr("BANK_VOUCHERS", ...)`. Do not call `Post()` during schema
 inspection.
+
+Controlled tests in `923/1` confirmed that one newly created `BANK_VOUCHER`
+can contain multiple `TRANSACTIONS` lines. Direct append to an already posted
+bank voucher is unsafe: `AppendLine()` added a row in memory and `Post()`
+returned true, but SQL read-back still showed the original line count; a
+hand-built minimal XML `DBOP="UPD"` also failed with `DBError=23000`.
+
+Appending to an existing voucher is confirmed only through Tiger's own exported
+XML shape: `Read(LOGICALREF)`, `ExportToXML("BANK_VOUCHERS", file)`, change the
+exported XML to `DBOP="UPD"`, add the new `TRANSACTION`, update `TOTAL_DEBIT`,
+then `ImportFromXmlStr("BANK_VOUCHERS", xml)` and `Post()`. In test firm
+`923/1`, this increased voucher `1006` from one line to two lines. The worker
+uses this path for daily `bank account + date` groups and verifies line
+marker/count/sum after every post.
 
 The minimal incoming voucher payload has been confirmed in test firm `923/1`:
 

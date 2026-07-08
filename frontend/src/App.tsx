@@ -32,6 +32,7 @@ import type {
   OneCPaymentExportEvent,
   PaymentProvider,
   PrintQrCodeConfigItem,
+  QueueStatus,
   TigerInvoiceExportEvent,
   TransactionRow,
   ViewMode,
@@ -65,6 +66,12 @@ const FIXED_PRINT_QR_CODE_TEMPLATES: PrintQrCodeConfigItem[] = [
   { code: "obank", label: "О!Банк", provider: "odengi", enabled: true, slot: 2, sort_order: 20, tiger_bank_account_code: null },
   { code: "qr_3", label: "QR 3", provider: "mkassa", enabled: false, slot: 3, sort_order: 30, tiger_bank_account_code: null },
   { code: "qr_4", label: "QR 4", provider: "odengi", enabled: false, slot: 4, sort_order: 40, tiger_bank_account_code: null },
+];
+
+const QUEUE_STATUS_OPTIONS: { value: QueueStatus; label: string }[] = [
+  { value: "pending", label: "Ожидание" },
+  { value: "success", label: "Успешные" },
+  { value: "error", label: "Ошибки" },
 ];
 
 function fixedPrintQrCodes(items: PrintQrCodeConfigItem[]): PrintQrCodeConfigItem[] {
@@ -247,7 +254,7 @@ function App() {
   const [invoiceId, setInvoiceId] = useState("");
   const [invoicePayments, setInvoicePayments] = useState<TransactionRow[]>([]);
   const [invoiceState, setInvoiceState] = useState<LoadState>({ loading: false, error: null });
-  const [queueStatusFilter, setQueueStatusFilter] = useState("");
+  const [queueStatusFilter, setQueueStatusFilter] = useState<QueueStatus[]>(["pending"]);
   const [tigerQueue, setTigerQueue] = useState<TigerInvoiceExportEvent[]>([]);
   const [oneCQueue, setOneCQueue] = useState<OneCPaymentExportEvent[]>([]);
   const [queueState, setQueueState] = useState<LoadState>({ loading: false, error: null });
@@ -353,10 +360,9 @@ function App() {
   const loadQueues = useCallback(async () => {
     setQueueState({ loading: true, error: null });
     try {
-      const status = queueStatusFilter.trim() || undefined;
       const [tigerRows, oneCRows] = await Promise.all([
-        fetchTigerInvoiceEvents({ limit, status }),
-        fetchOneCPaymentEvents({ limit, status }),
+        fetchTigerInvoiceEvents({ limit, status: queueStatusFilter }),
+        fetchOneCPaymentEvents({ limit, status: queueStatusFilter }),
       ]);
       setTigerQueue(tigerRows);
       setOneCQueue(oneCRows);
@@ -1152,18 +1158,24 @@ function QueuesPanel({
   tigerEvents: TigerInvoiceExportEvent[];
   oneCEvents: OneCPaymentExportEvent[];
   state: LoadState;
-  statusFilter: string;
+  statusFilter: QueueStatus[];
   limit: number;
   resettingKey: string | null;
-  onStatusFilterChange: (value: string) => void;
+  onStatusFilterChange: (value: QueueStatus[]) => void;
   onLimitChange: (value: number) => void;
   onRefresh: () => void;
   onResetTiger: (event: TigerInvoiceExportEvent) => void;
   onResetOneC: (event: OneCPaymentExportEvent) => void;
 }) {
-  const tigerPending = tigerEvents.filter((event) => event.status === "pending" || event.status === "error").length;
-  const oneCPending = oneCEvents.filter((event) => event.status === "pending" || event.status === "error").length;
+  const tigerPending = tigerEvents.filter((event) => event.status === "pending").length;
+  const oneCPending = oneCEvents.filter((event) => event.status === "pending").length;
   const [activeQueue, setActiveQueue] = useState<"tiger" | "1c">("tiger");
+  const toggleStatus = (status: QueueStatus) => {
+    const next = statusFilter.includes(status)
+      ? statusFilter.filter((item) => item !== status)
+      : [...statusFilter, status];
+    onStatusFilterChange(next.length > 0 ? next : ["pending"]);
+  };
 
   return (
     <section className="queues-panel">
@@ -1178,15 +1190,19 @@ function QueuesPanel({
             onChange={(event) => onLimitChange(Number(event.target.value) || 50)}
           />
         </label>
-        <label>
-          Статус
-          <select value={statusFilter} onChange={(event) => onStatusFilterChange(event.target.value)}>
-            <option value="">Все</option>
-            <option value="pending">pending</option>
-            <option value="success">success</option>
-            <option value="error">error</option>
-          </select>
-        </label>
+        <fieldset className="status-filter">
+          <legend>Статусы</legend>
+          {QUEUE_STATUS_OPTIONS.map((option) => (
+            <label key={option.value}>
+              <input
+                checked={statusFilter.includes(option.value)}
+                type="checkbox"
+                onChange={() => toggleStatus(option.value)}
+              />
+              {option.label}
+            </label>
+          ))}
+        </fieldset>
         <button className="refresh" disabled={state.loading} type="button" onClick={onRefresh}>
           <Icon name="refresh" size={16} />
           {state.loading ? "Загрузка..." : "Обновить"}

@@ -310,6 +310,47 @@
   text-align: center;
 }
 
+.status-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: min(100%, 280px);
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.status-filter legend {
+  width: 100%;
+  margin-bottom: 2px;
+  color: var(--text-muted, #64748b);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.status-filter label {
+  display: inline-flex;
+  min-width: 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border, #d7dee8);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--surface, #ffffff);
+  color: var(--text, #0f172a);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.status-filter input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
 .queue-card-header {
   display: flex;
   align-items: center;

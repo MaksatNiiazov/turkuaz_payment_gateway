@@ -1268,6 +1268,18 @@ def test_tiger_worker_can_report_success_and_admin_can_reset(tmp_path: Path) -> 
             "/api/v1/local/tiger/invoice-events/pending",
             headers={"X-Integration-Key": "erp-secret"},
         )
+        mixed_statuses = client.get(
+            "/api/v1/local/tiger/invoice-events?status=pending&status=success",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        success_status = client.get(
+            "/api/v1/local/tiger/invoice-events?status=success",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        invalid_status = client.get(
+            "/api/v1/local/tiger/invoice-events?status=unknown",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
         reset = client.post(
             f"/api/v1/local/tiger/invoice-events/{event_id}/reset",
             headers={"X-Admin-Key": "admin-secret"},
@@ -1279,6 +1291,11 @@ def test_tiger_worker_can_report_success_and_admin_can_reset(tmp_path: Path) -> 
     assert result.json()["tiger_fiche_no"] == "BN-1001"
     assert after_success.status_code == 200
     assert after_success.json() == []
+    assert mixed_statuses.status_code == 200
+    assert [item["status"] for item in mixed_statuses.json()] == ["success"]
+    assert success_status.status_code == 200
+    assert [item["status"] for item in success_status.json()] == ["success"]
+    assert invalid_status.status_code == 422
     assert reset.status_code == 200
     assert reset.json()["status"] == "pending"
     assert reset.json()["tiger_logical_ref"] is None
@@ -1340,6 +1357,10 @@ def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> No
             "/api/v1/local/1c/payment-events/pending",
             headers={"X-Integration-Key": "erp-secret"},
         )
+        admin_mixed_statuses = client.get(
+            "/api/v1/local/1c/payment-events?status=pending&status=success",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
         reset = client.post(
             f"/api/v1/local/1c/payment-events/{event_id}/reset",
             headers={"X-Admin-Key": "admin-secret"},
@@ -1380,6 +1401,8 @@ def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> No
     assert result.json()["one_c_document_id"] == "1C-PAYMENT-1001"
     assert result.json()["attempt_count"] == 2
     assert after_success.json() == []
+    assert admin_mixed_statuses.status_code == 200
+    assert [item["status"] for item in admin_mixed_statuses.json()] == ["success"]
     assert reset.status_code == 200
     assert reset.json()["status"] == "pending"
     assert reset.json()["one_c_document_id"] is None

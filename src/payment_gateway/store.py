@@ -194,8 +194,20 @@ Index("idx_api_access_events_integration_name", api_access_events.c.integration_
 Index("idx_api_access_events_created_at", api_access_events.c.created_at)
 Index("idx_print_qr_codes_enabled_sort", print_qr_codes.c.enabled, print_qr_codes.c.sort_order)
 Index("idx_tiger_invoice_exports_status", tiger_invoice_exports.c.status)
+Index(
+    "idx_tiger_invoice_exports_status_created",
+    tiger_invoice_exports.c.status,
+    tiger_invoice_exports.c.created_at,
+    tiger_invoice_exports.c.id,
+)
 Index("idx_tiger_invoice_exports_updated_at", tiger_invoice_exports.c.updated_at)
 Index("idx_one_c_payment_exports_status", one_c_payment_exports.c.status)
+Index(
+    "idx_one_c_payment_exports_status_created",
+    one_c_payment_exports.c.status,
+    one_c_payment_exports.c.created_at,
+    one_c_payment_exports.c.id,
+)
 Index("idx_one_c_payment_exports_updated_at", one_c_payment_exports.c.updated_at)
 
 
@@ -606,13 +618,12 @@ class PaymentStore:
         statuses: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         capped_limit = min(max(limit, 1), 500)
-        query = (
-            select(tiger_invoice_exports)
-            .order_by(tiger_invoice_exports.c.created_at, tiger_invoice_exports.c.id)
-            .limit(capped_limit)
-        )
+        query = select(tiger_invoice_exports)
         if statuses:
             query = query.where(tiger_invoice_exports.c.status.in_(statuses))
+        query = query.order_by(tiger_invoice_exports.c.created_at, tiger_invoice_exports.c.id).limit(
+            capped_limit
+        )
 
         with self.engine.begin() as connection:
             rows = connection.execute(query).mappings()
@@ -772,13 +783,12 @@ class PaymentStore:
         statuses: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         capped_limit = min(max(limit, 1), 500)
-        query = (
-            select(one_c_payment_exports)
-            .order_by(one_c_payment_exports.c.created_at, one_c_payment_exports.c.id)
-            .limit(capped_limit)
-        )
+        query = select(one_c_payment_exports)
         if statuses:
             query = query.where(one_c_payment_exports.c.status.in_(statuses))
+        query = query.order_by(one_c_payment_exports.c.created_at, one_c_payment_exports.c.id).limit(
+            capped_limit
+        )
 
         with self.engine.begin() as connection:
             rows = connection.execute(query).mappings()
@@ -1008,6 +1018,10 @@ class PaymentStore:
                     "CREATE INDEX IF NOT EXISTS idx_tiger_invoice_exports_status "
                     "ON tiger_invoice_exports (status)"
                 )
+                connection.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS idx_tiger_invoice_exports_status_created "
+                    "ON tiger_invoice_exports (status, created_at, id)"
+                )
 
             one_c_export_columns = {
                 row[1]
@@ -1027,6 +1041,10 @@ class PaymentStore:
                 connection.exec_driver_sql(
                     "CREATE INDEX IF NOT EXISTS idx_one_c_payment_exports_status "
                     "ON one_c_payment_exports (status)"
+                )
+                connection.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS idx_one_c_payment_exports_status_created "
+                    "ON one_c_payment_exports (status, created_at, id)"
                 )
 
     @staticmethod

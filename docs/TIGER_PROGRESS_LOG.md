@@ -1059,3 +1059,75 @@ PAYTRANS.LOGICALREF=2412, MODULENR=7, TRCODE=3, SIGN=1, TOTAL=1
 счета. В запрос `POST /api/v1/invoice/qr-codes` 1C также передает обязательный
 `client_code` (`CLCARD.CODE`). Технические `source` и `print_qr_slot` удалены
 из provider metadata, чтобы сохранить установленный лимит в 5 ключей.
+
+## Проверка Группировки Банковских Ваучеров
+
+Контролируемые тесты в `923/1` подтвердили безопасный способ группировки:
+один новый `BANK_VOUCHER` может содержать несколько строк `TRANSACTIONS` уже
+при создании через `ImportFromXmlStr("BANK_VOUCHERS", xml)` и `Post()`.
+
+```text
+Mode: multi-insert
+Marker: PG-CS-MULTI-20260708-074628
+Posted voucher: LOGICALREF=1010 FICHENO=00000037
+Imported line count: 2
+SQL summary: LINE_COUNT=2, LINE_SUM=3
+RESULT multi-insert: OK
+```
+
+Два прямых варианта дописывания строк в уже сохраненный `BANK_VOUCHER` не
+подтвердились:
+
+```text
+Mode: append-existing, VoucherRef=1006
+TRANSACTIONS.AppendLine() added the line in memory.
+Post returned true.
+SQL summary after post: LINE_COUNT=1
+RESULT append-existing: FAILED line count did not increase
+
+Mode: xml-update-full, VoucherRef=1006
+Imported update line count: 2
+Post failed with ErrorCode=8, DBError=23000
+RESULT xml-update-full: FAILED
+```
+
+Затем подтвердился рабочий способ дописывания через родной экспорт Tiger:
+
+```text
+Mode: xml-update-export, VoucherRef=1006
+Read(1006) -> ExportToXML("BANK_VOUCHERS", file)
+Modify exported XML: DBOP="UPD", add one TRANSACTION, update TOTAL_DEBIT
+Imported exported-update line count: 2
+Post: true
+SQL summary after post: HEADER=3, LINE_COUNT=2, LINE_SUM=3
+New line LOGICALREF=1010, AMOUNT=2, DESC=PG-CS-XMLEXP-20260708-075834
+RESULT xml-update-export: OK
+```
+
+Вывод: для нового ваучера можно сразу создавать несколько строк через XML
+`INS`. Для уже сохраненного ваучера не использовать прямой COM
+`TRANSACTIONS.AppendLine()` и не собирать update XML вручную с минимальным
+набором полей. Подтвержденный путь дописывания: `Read(LOGICALREF)`,
+`ExportToXML("BANK_VOUCHERS", file)`, изменение экспортированного Tiger XML,
+`ImportFromXmlStr("BANK_VOUCHERS", xml)`, `Post()`, затем SQL/`Read`
+проверка количества строк и суммы.
+
+## Реализация Группировки В Worker
+
+`TigerIntegrationWorker/LogoObjectsClient.cs` переведен с модели
+`1 invoice -> 1 BANK_VOUCHER` на дневную группировку по `bank account + date`:
+
+- `BNFICHE.GENEXP1` / `NOTES1` хранит group marker `PGG:<yyyyMMdd>:<bankHash>`;
+- `BNFLINE.LINEEXP` / `TRANSACTION.DESCRIPTION` хранит line marker
+  `PG:<invoiceIdHash>`;
+- перед записью worker ищет существующую строку по line marker;
+- если дневной ваучер не найден, создается новый `BANK_VOUCHER` с первой
+  строкой;
+- если дневной ваучер найден, worker выполняет подтвержденный путь
+  `Read -> ExportToXML -> modify exported XML -> ImportFromXmlStr -> Post`;
+- после `Post()` worker проверяет line marker, количество строк и сумму;
+- при исключении worker повторно ищет line marker, чтобы корректно обработать
+  случай, когда запись успела пройти, но ответ/проверка оборвались.
+
+COM-операции остаются сериализованными через `_comLock`. Прямых SQL-записей
+нет; `NewQuery/OpenDirect` используется только для read-only проверок.
