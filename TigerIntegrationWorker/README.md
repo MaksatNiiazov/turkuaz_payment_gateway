@@ -82,6 +82,11 @@ Edit only `appsettings.json`:
 
 Do not commit `appsettings.json` with real credentials.
 
+`Gateway:IntegrationKey` must match the value of the `tiger` entry in
+PaymentGateway `INTEGRATION_KEYS`, for example
+`INTEGRATION_KEYS=1c:...,tiger:use-a-long-random-secret,...`. The worker should
+not use the 1C/POS/site integration keys.
+
 Start with both protections enabled:
 
 ```json

@@ -183,6 +183,7 @@ async def test_payment_service_auto_cancels_other_invoice_qr_after_paid_webhook(
         transaction_id="MBANK-1",
         status="waiting",
         transaction_type="qr",
+        amount=100,
         external_invoice_id=invoice_id,
         metadata={"invoice_id": invoice_id, "print_qr_code": "mbank"},
         raw_payload={"id": "MBANK-1"},

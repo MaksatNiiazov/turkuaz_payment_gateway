@@ -356,7 +356,13 @@ class PaymentStore:
             except IntegrityError:
                 duplicate = True
 
-        self.upsert_transaction_payload(data, provider=provider)
+        existing_transaction = self.get_transaction(transaction_id)
+        if existing_transaction is not None and self._webhook_matches_existing_transaction(
+            data,
+            provider=provider,
+            existing_transaction=existing_transaction,
+        ):
+            self.upsert_transaction_payload(data, provider=provider)
         return WebhookStoreResult(transaction_id=transaction_id, duplicate=duplicate)
 
     def get_transaction(self, transaction_id: str) -> dict[str, Any] | None:
@@ -539,7 +545,15 @@ class PaymentStore:
                 )
         return self.list_print_qr_codes()
 
-    def upsert_tiger_invoice_export(self, event: dict[str, Any]) -> dict[str, Any]:
+    def upsert_tiger_invoice_export(
+        self,
+        event: dict[str, Any],
+        *,
+        status: str = "pending",
+        error_message: str | None = None,
+    ) -> dict[str, Any]:
+        if status not in {"pending", "error"}:
+            raise ValueError("Unsupported initial Tiger export status")
         invoice_id = self._clean_string(event.get("invoiceId"))
         paid_transaction_id = self._clean_string(event.get("paidTransactionId"))
         paid_provider = self._clean_string(event.get("paidProvider"))
@@ -562,12 +576,14 @@ class PaymentStore:
             "amount": self._parse_int(event.get("amountTyiyn")),
             "currency": self._clean_string(event.get("currency")),
             "event_payload": self._json_dumps(event),
+            "error_message": self._clean_string(error_message) if status == "error" else None,
             "updated_at": now,
         }
         insert_values = {
             **values,
-            "status": "pending",
+            "status": status,
             "attempt_count": 0,
+            "last_attempt_at": now if status == "error" else None,
             "created_at": now,
         }
 
@@ -600,6 +616,16 @@ class PaymentStore:
 
             if existing["status"] == "success":
                 return self._tiger_invoice_export_row_to_dict(existing)
+            if existing["paid_transaction_id"] != paid_transaction_id:
+                return self._tiger_invoice_export_row_to_dict(existing)
+
+            if status == "pending":
+                values["status"] = "pending"
+                values["error_message"] = None
+                values["exported_at"] = None
+            else:
+                values["status"] = "error"
+                values["last_attempt_at"] = now
 
             connection.execute(
                 tiger_invoice_exports.update()
@@ -1127,6 +1153,27 @@ class PaymentStore:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _webhook_matches_existing_transaction(
+        data: dict[str, Any],
+        *,
+        provider: str,
+        existing_transaction: dict[str, Any],
+    ) -> bool:
+        existing_provider = PaymentStore._clean_string(existing_transaction.get("provider"))
+        if existing_provider and existing_provider != provider:
+            return False
+
+        existing_amount = PaymentStore._parse_int(existing_transaction.get("amount"))
+        webhook_amount = PaymentStore._parse_int(data.get("amount"))
+        webhook_status = PaymentStore._clean_string(data.get("status"))
+
+        if webhook_status == "paid" and (existing_amount is None or webhook_amount is None):
+            return False
+        if existing_amount is not None and webhook_amount is not None:
+            return existing_amount == webhook_amount
+        return True
 
     @staticmethod
     def _extract_external_invoice_id(data: dict[str, Any]) -> str | None:

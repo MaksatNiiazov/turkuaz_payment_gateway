@@ -48,6 +48,7 @@ from payment_gateway.providers.odengi import (
     ODengiTransportError,
 )
 from payment_gateway.service import (
+    InvoiceQRCodeReuseError,
     PaymentService,
     build_one_c_payment_event,
     build_tiger_invoice_event,
@@ -69,6 +70,8 @@ class OneCPaymentExportResult(APIModel):
 
 
 QUEUE_STATUSES = {"pending", "success", "error", "processing", "skipped"}
+ONE_C_INTEGRATION_NAMES = {"1c"}
+TIGER_INTEGRATION_NAMES = {"tiger"}
 
 
 integration_key_scheme = APIKeyHeader(
@@ -942,10 +945,11 @@ def create_app(
         "/local/tiger/invoice-events/pending",
         tags=["local"],
         summary="List pending Tiger invoice export events",
+        dependencies=[Depends(require_integration_name(*TIGER_INTEGRATION_NAMES))],
         description=(
             "Used by the Tiger worker. Returns invoice-level events for invoices that "
-            "are paid and currently queued for Tiger export. Failed events must be "
-            "returned to the queue explicitly."
+            "are paid and currently queued for Tiger export. Error events stay out of "
+            "this list until an admin resets them."
         ),
     )
     async def tiger_pending_invoice_events(
@@ -961,6 +965,7 @@ def create_app(
         "/local/tiger/invoice-events/{event_id}/result",
         tags=["local"],
         summary="Save Tiger invoice export result",
+        dependencies=[Depends(require_integration_name(*TIGER_INTEGRATION_NAMES))],
         description="Used by the Tiger worker to report success or error after processing.",
     )
     async def tiger_invoice_event_result(
@@ -986,10 +991,11 @@ def create_app(
         "/local/1c/payment-events/pending",
         tags=["local"],
         summary="List pending 1C payment events",
+        dependencies=[Depends(require_integration_name(*ONE_C_INTEGRATION_NAMES))],
         description=(
             "Used by the 1C scheduled job or manual sync command. Returns successful "
-            "payments currently queued for 1C. Failed events must be returned to the "
-            "queue explicitly."
+            "payments currently queued for 1C. Error events stay out of this list "
+            "until an admin resets them."
         ),
     )
     async def one_c_pending_payment_events(
@@ -1005,9 +1011,8 @@ def create_app(
         "/local/1c/payment-events/{event_id}/result",
         tags=["local"],
         summary="Save 1C payment processing result",
-        description=(
-            "Used by 1C to acknowledge an imported payment or report an error for retry."
-        ),
+        dependencies=[Depends(require_integration_name(*ONE_C_INTEGRATION_NAMES))],
+        description="Used by 1C to acknowledge an imported payment or report an error.",
     )
     async def one_c_payment_event_result(
         request: Request,
@@ -1032,6 +1037,7 @@ def create_app(
         response_model=InvoiceQRCodeBundleResponse,
         tags=["qr"],
         summary="Create or reuse printable invoice QR codes",
+        dependencies=[Depends(require_integration_name(*ONE_C_INTEGRATION_NAMES))],
         description=(
             "Creates or reuses QR transactions for a 1C invoice using the admin-configured "
             "print QR list. 1C should call this once and render returned items in order."
@@ -1063,12 +1069,21 @@ def create_app(
             item = configured_by_code.get(paid_code.strip())
             if item is None:
                 continue
+            if transaction.get("amount") != payload.amount:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Existing paid QR amount does not match current invoice amount. "
+                        "Do not reprint this invoice until the accounting amount is reconciled."
+                    ),
+                )
             refreshed = store.merge_transaction_metadata(
                 str(transaction["id"]),
                 build_invoice_qr_metadata(payload, item),
             )
             transaction = refreshed or transaction
             transaction_id = str(transaction["id"])
+            await payments(request).cancel_other_invoice_transactions_if_paid(transaction_id)
             paid_response_items.append(
                 InvoiceQRCodeItem(
                     code=item.code,
@@ -1115,16 +1130,22 @@ def create_app(
         response_items: list[InvoiceQRCodeItem] = []
         for item in configured_items:
             metadata = build_invoice_qr_metadata(payload, item)
-            transaction, reused = await payments(request).create_or_reuse_invoice_qr(
-                DynamicQRCreate(
-                    amount=payload.amount,
-                    metadata=metadata,
-                    is_long_living=print_qr_uses_long_living_mkassa(item),
-                ),
-                provider_name=item.provider,
-                invoice_id=payload.invoice_id,
-                print_qr_code=item.code,
-            )
+            try:
+                transaction, reused = await payments(request).create_or_reuse_invoice_qr(
+                    DynamicQRCreate(
+                        amount=payload.amount,
+                        metadata=metadata,
+                        is_long_living=print_qr_uses_long_living_mkassa(item),
+                    ),
+                    provider_name=item.provider,
+                    invoice_id=payload.invoice_id,
+                    print_qr_code=item.code,
+                )
+            except InvoiceQRCodeReuseError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=str(exc),
+                ) from exc
             transaction_id = str(transaction["id"])
             response_items.append(
                 InvoiceQRCodeItem(
@@ -1607,6 +1628,20 @@ def parse_queue_statuses(status_values: list[str] | None) -> set[str] | None:
             detail=f"Unsupported queue status: {', '.join(sorted(unsupported))}",
         )
     return statuses
+
+
+def require_integration_name(*allowed_names: str):
+    allowed = set(allowed_names)
+
+    async def dependency(request: Request) -> None:
+        integration_name = getattr(request.state, "integration_name", None)
+        if integration_name not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Integration key is not allowed for this endpoint",
+            )
+
+    return dependency
 
 
 def render_qr_png(data: str) -> StreamingResponse:

@@ -241,6 +241,10 @@ GET /api/v1/local/tiger/invoice-events/pending?limit=20
 X-Integration-Key: <tiger-worker-secret>
 ```
 
+`<tiger-worker-secret>` must be the value from an `INTEGRATION_KEYS` entry named
+`tiger`, for example `INTEGRATION_KEYS=1c:...,tiger:...`. 1C/POS/site keys are
+not allowed to poll or acknowledge the Tiger queue.
+
 Recommended event payload:
 
 ```json
@@ -272,6 +276,11 @@ invoiceId is the business idempotency key for Tiger export
 PaymentGateway should create at most one successful Tiger export per `invoiceId`.
 The paid transaction details are kept as evidence of which bank actually paid
 the invoice.
+
+PaymentGateway keeps incomplete Tiger events out of `pending`. Missing
+`paidAt`, `targetBankAccountCode`, `clientCode`, non-positive amount, or
+non-KGS currency places the event in `error` for admin review. After fixing the
+source data, reset the event to `pending` from the admin endpoint.
 
 Recommended result endpoint on PaymentGateway:
 
@@ -403,17 +412,15 @@ invoice ID:
 ```json
 {
   "amount": 1500000,
-  "metadata": {
-    "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
-    "invoice_number": "TIGER-FACTURE-1001",
-    "source": "1c",
-    "client_code": "CARI.001"
-  }
+  "invoice_id": "550e8400-e29b-41d4-a716-446655440000",
+  "invoice_number": "TIGER-FACTURE-1001",
+  "client_code": "CARI.001"
 }
 ```
 
 Use `invoice_id` as the business key. Use `invoice_number` only for display and
-manual search.
+manual search. `client_code` must be Logo Tiger `CLCARD.CODE`, not the ordinary
+1C customer code.
 
 ## Practical Next Step
 

@@ -410,8 +410,18 @@ class AsyncODengiClient:
             or metadata.get("invoice_number")
         )
         if order_id:
-            return order_id[:64]
+            print_qr_code = metadata.get("print_qr_code")
+            if print_qr_code:
+                return AsyncODengiClient._limited_order_id(f"{order_id}-{print_qr_code}")
+            return AsyncODengiClient._limited_order_id(order_id)
         return f"TGW-{uuid.uuid4().hex[:20]}"
+
+    @staticmethod
+    def _limited_order_id(value: str) -> str:
+        if len(value) <= 64:
+            return value
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
+        return f"{value[:43]}-{digest}"
 
     @staticmethod
     def _qr_payload(response_data: Mapping[str, Any]) -> str:

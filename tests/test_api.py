@@ -119,7 +119,7 @@ class FakeProvider(PaymentProvider):
 def make_settings(db_path: Path) -> Settings:
     return Settings(
         mkassa_api_key=SecretStr("secret"),
-        integration_keys=SecretStr("pos:pos-secret,erp:erp-secret"),
+        integration_keys=SecretStr("pos:pos-secret,1c:1c-secret,tiger:tiger-secret"),
         payment_admin_api_key=SecretStr("admin-secret"),
         database_url=f"sqlite:///{db_path}",
     )
@@ -130,10 +130,34 @@ def make_multi_provider_settings(db_path: Path) -> Settings:
         mkassa_api_key=SecretStr("secret"),
         odengi_sid="8087710950",
         odengi_password=SecretStr("odengi-secret"),
-        integration_keys=SecretStr("mkassa:mkassa-secret,odengi:odengi-secret"),
+        integration_keys=SecretStr(
+            "mkassa:mkassa-secret,odengi:odengi-secret,1c:1c-secret,tiger:tiger-secret"
+        ),
         payment_provider_by_integration="odengi:odengi",
         payment_admin_api_key=SecretStr("admin-secret"),
         database_url=f"sqlite:///{db_path}",
+    )
+
+
+def seed_waiting_transaction(
+    store: SQLitePaymentStore,
+    transaction_id: str,
+    *,
+    amount: int = 100,
+    invoice_id: str | None = None,
+    metadata: dict | None = None,
+    provider: str = "mkassa",
+) -> None:
+    store.initialize()
+    store.upsert_transaction(
+        transaction_id=transaction_id,
+        status="waiting",
+        transaction_type="qr",
+        amount=amount,
+        external_invoice_id=invoice_id,
+        metadata=metadata,
+        raw_payload={"id": transaction_id, "metadata": metadata or {}},
+        provider=provider,
     )
 
 
@@ -533,12 +557,12 @@ def test_invoice_qr_codes_endpoint_uses_config_and_reuses_existing_qr(tmp_path: 
         )
         first = client.post(
             "/api/v1/invoice/qr-codes",
-            headers={"X-Integration-Key": "mkassa-secret"},
+            headers={"X-Integration-Key": "1c-secret"},
             json=payload,
         )
         second = client.post(
             "/api/v1/invoice/qr-codes",
-            headers={"X-Integration-Key": "mkassa-secret"},
+            headers={"X-Integration-Key": "1c-secret"},
             json=payload,
         )
 
@@ -648,7 +672,7 @@ def test_invoice_qr_reuse_refreshes_existing_metadata(tmp_path: Path) -> None:
         )
         response = client.post(
             "/api/v1/invoice/qr-codes",
-            headers={"X-Integration-Key": "mkassa-secret"},
+            headers={"X-Integration-Key": "1c-secret"},
             json={
                 "amount": 1500000,
                 "invoice_id": invoice_id,
@@ -773,7 +797,7 @@ def test_invoice_qr_for_paid_invoice_returns_only_paid_codes(tmp_path: Path) -> 
         )
         response = client.post(
             "/api/v1/invoice/qr-codes",
-            headers={"X-Integration-Key": "mkassa-secret"},
+            headers={"X-Integration-Key": "1c-secret"},
             json={
                 "amount": 1500000,
                 "invoice_id": invoice_id,
@@ -1094,7 +1118,7 @@ def test_integration_key_pool_identifies_integration_name(tmp_path: Path) -> Non
     with TestClient(app) as client:
         integration = client.get(
             "/api/v1/integration",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "tiger-secret"},
         )
         events = client.get(
             "/api/v1/local/access-events",
@@ -1102,17 +1126,55 @@ def test_integration_key_pool_identifies_integration_name(tmp_path: Path) -> Non
         )
 
     assert integration.status_code == 200
-    assert integration.json() == {"integration_name": "erp"}
+    assert integration.json() == {"integration_name": "tiger"}
     assert events.status_code == 200
-    assert [event["integration_name"] for event in events.json()] == ["erp"]
+    assert [event["integration_name"] for event in events.json()] == ["tiger"]
+
+
+def test_integration_key_roles_limit_1c_and_tiger_queues(tmp_path: Path) -> None:
+    app = create_app(
+        settings=make_settings(tmp_path / "app.db"),
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        one_c_with_pos = client.get(
+            "/api/v1/local/1c/payment-events/pending",
+            headers={"X-Integration-Key": "pos-secret"},
+        )
+        one_c_with_tiger = client.get(
+            "/api/v1/local/1c/payment-events/pending",
+            headers={"X-Integration-Key": "tiger-secret"},
+        )
+        one_c_with_1c = client.get(
+            "/api/v1/local/1c/payment-events/pending",
+            headers={"X-Integration-Key": "1c-secret"},
+        )
+        tiger_with_1c = client.get(
+            "/api/v1/local/tiger/invoice-events/pending",
+            headers={"X-Integration-Key": "1c-secret"},
+        )
+        tiger_with_tiger = client.get(
+            "/api/v1/local/tiger/invoice-events/pending",
+            headers={"X-Integration-Key": "tiger-secret"},
+        )
+
+    assert one_c_with_pos.status_code == 403
+    assert one_c_with_tiger.status_code == 403
+    assert one_c_with_1c.status_code == 200
+    assert tiger_with_1c.status_code == 403
+    assert tiger_with_tiger.status_code == 200
 
 
 def test_webhook_is_idempotent_and_does_not_require_integration_key(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    seed_waiting_transaction(store, "MKSA-2")
     app = create_app(
         settings=make_settings(db_path),
         client=FakeMKassaClient(),
-        store=SQLitePaymentStore(db_path),
+        store=store,
     )
     payload = {
         "id": "MKSA-2",
@@ -1139,14 +1201,148 @@ def test_webhook_is_idempotent_and_does_not_require_integration_key(tmp_path: Pa
     assert local.json()["status"] == "paid"
 
 
-def test_tiger_event_preview_builds_paid_payment_payload(tmp_path: Path) -> None:
+def test_webhook_for_unknown_transaction_is_audited_without_creating_payment(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
     app = create_app(
         settings=make_settings(db_path),
         client=FakeMKassaClient(),
-        store=SQLitePaymentStore(db_path),
+        store=store,
     )
+    payload = {
+        "id": "MKSA-UNKNOWN-WEBHOOK",
+        "status": "paid",
+        "amount": "100",
+        "paid_at": "2026-02-13T12:00:05+06:00",
+        "metadata": {"invoice_id": "550e8400-e29b-41d4-a716-446655440000"},
+    }
+
+    with TestClient(app) as client:
+        webhook = client.post("/api/v1/webhooks/mkassa", json=payload)
+        local = client.get(
+            "/api/v1/local/transactions/MKSA-UNKNOWN-WEBHOOK",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        webhooks = client.get(
+            "/api/v1/local/webhooks",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        one_c_pending = client.get(
+            "/api/v1/local/1c/payment-events/pending",
+            headers={"X-Integration-Key": "1c-secret"},
+        )
+
+    assert webhook.status_code == 200
+    assert webhook.json()["duplicate"] is False
+    assert local.status_code == 404
+    assert webhooks.status_code == 200
+    assert webhooks.json()[0]["transaction_id"] == "MKSA-UNKNOWN-WEBHOOK"
+    assert one_c_pending.status_code == 200
+    assert one_c_pending.json() == []
+
+
+def test_webhook_does_not_update_existing_transaction_on_amount_mismatch(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
     invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    seed_waiting_transaction(
+        store,
+        "MKSA-SPOOFED-AMOUNT",
+        amount=100,
+        invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id},
+    )
+    app = create_app(
+        settings=make_settings(db_path),
+        client=FakeMKassaClient(),
+        store=store,
+    )
+
+    with TestClient(app) as client:
+        webhook = client.post(
+            "/api/v1/webhooks/mkassa",
+            json={
+                "id": "MKSA-SPOOFED-AMOUNT",
+                "status": "paid",
+                "amount": "200",
+                "paid_at": "2026-02-13T12:00:05+06:00",
+                "metadata": {"invoice_id": invoice_id},
+            },
+        )
+        local = client.get(
+            "/api/v1/local/transactions/MKSA-SPOOFED-AMOUNT",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        one_c_pending = client.get(
+            "/api/v1/local/1c/payment-events/pending",
+            headers={"X-Integration-Key": "1c-secret"},
+        )
+
+    assert webhook.status_code == 200
+    assert local.status_code == 200
+    assert local.json()["status"] == "waiting"
+    assert one_c_pending.status_code == 200
+    assert one_c_pending.json() == []
+
+
+def test_webhook_does_not_update_existing_transaction_on_provider_mismatch(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    seed_waiting_transaction(
+        store,
+        "PROVIDER-MISMATCH",
+        amount=100,
+        provider="odengi",
+    )
+    app = create_app(
+        settings=make_multi_provider_settings(db_path),
+        providers=[FakeProvider("mkassa", "MKSA-1"), FakeProvider("odengi", "PROVIDER-MISMATCH")],
+        store=store,
+    )
+
+    with TestClient(app) as client:
+        webhook = client.post(
+            "/api/v1/webhooks/mkassa",
+            json={
+                "id": "PROVIDER-MISMATCH",
+                "status": "paid",
+                "amount": "100",
+                "paid_at": "2026-02-13T12:00:05+06:00",
+            },
+        )
+        local = client.get(
+            "/api/v1/local/transactions/PROVIDER-MISMATCH",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert webhook.status_code == 200
+    assert local.status_code == 200
+    assert local.json()["provider"] == "odengi"
+    assert local.json()["status"] == "waiting"
+
+
+def test_tiger_event_preview_builds_paid_payment_payload(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    seed_waiting_transaction(
+        store,
+        "MKSA-TIGER-1",
+        amount=1500000,
+        invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id},
+    )
+    app = create_app(
+        settings=make_settings(db_path),
+        client=FakeMKassaClient(),
+        store=store,
+    )
 
     with TestClient(app) as client:
         webhook = client.post(
@@ -1191,12 +1387,20 @@ def test_tiger_event_preview_builds_paid_payment_payload(tmp_path: Path) -> None
 
 def test_paid_webhook_creates_tiger_invoice_export_event(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    seed_waiting_transaction(
+        store,
+        "MKSA-TIGER-QUEUE-1",
+        amount=1500000,
+        invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id},
+    )
     app = create_app(
         settings=make_settings(db_path),
         client=FakeMKassaClient(),
-        store=SQLitePaymentStore(db_path),
+        store=store,
     )
-    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
 
     with TestClient(app) as client:
         webhook = client.post(
@@ -1216,7 +1420,7 @@ def test_paid_webhook_creates_tiger_invoice_export_event(tmp_path: Path) -> None
         )
         pending = client.get(
             "/api/v1/local/tiger/invoice-events/pending",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "tiger-secret"},
         )
 
     assert webhook.status_code == 200
@@ -1233,12 +1437,20 @@ def test_paid_webhook_creates_tiger_invoice_export_event(tmp_path: Path) -> None
 
 def test_tiger_worker_can_report_success_and_admin_can_reset(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    seed_waiting_transaction(
+        store,
+        "MKSA-TIGER-RESULT-1",
+        amount=1500000,
+        invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id},
+    )
     app = create_app(
         settings=make_settings(db_path),
         client=FakeMKassaClient(),
-        store=SQLitePaymentStore(db_path),
+        store=store,
     )
-    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
 
     with TestClient(app) as client:
         client.post(
@@ -1247,17 +1459,22 @@ def test_tiger_worker_can_report_success_and_admin_can_reset(tmp_path: Path) -> 
                 "id": "MKSA-TIGER-RESULT-1",
                 "status": "paid",
                 "amount": "1500000",
-                "metadata": {"invoice_id": invoice_id},
+                "paid_at": "2026-06-24T10:30:00+06:00",
+                "metadata": {
+                    "invoice_id": invoice_id,
+                    "client_code": "CARI.001",
+                    "tiger_bank_account_code": "MKASSA_KGS",
+                },
             },
         )
         pending = client.get(
             "/api/v1/local/tiger/invoice-events/pending",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "tiger-secret"},
         )
         event_id = pending.json()[0]["id"]
         result = client.post(
             f"/api/v1/local/tiger/invoice-events/{event_id}/result",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "tiger-secret"},
             json={
                 "success": True,
                 "tiger_logical_ref": "12345",
@@ -1266,7 +1483,7 @@ def test_tiger_worker_can_report_success_and_admin_can_reset(tmp_path: Path) -> 
         )
         after_success = client.get(
             "/api/v1/local/tiger/invoice-events/pending",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "tiger-secret"},
         )
         mixed_statuses = client.get(
             "/api/v1/local/tiger/invoice-events?status=pending&status=success",
@@ -1302,14 +1519,76 @@ def test_tiger_worker_can_report_success_and_admin_can_reset(tmp_path: Path) -> 
     assert reset.json()["attempt_count"] == 1
 
 
-def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> None:
+def test_paid_webhook_with_incomplete_tiger_metadata_goes_to_error_queue(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    seed_waiting_transaction(
+        store,
+        "MKSA-TIGER-INVALID-1",
+        amount=1500000,
+        invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id},
+    )
     app = create_app(
         settings=make_settings(db_path),
         client=FakeMKassaClient(),
-        store=SQLitePaymentStore(db_path),
+        store=store,
     )
+
+    with TestClient(app) as client:
+        webhook = client.post(
+            "/api/v1/webhooks/mkassa",
+            json={
+                "id": "MKSA-TIGER-INVALID-1",
+                "status": "paid",
+                "amount": "1500000",
+                "paid_at": "2026-06-24T10:30:00+06:00",
+                "metadata": {"invoice_id": invoice_id},
+            },
+        )
+        tiger_pending = client.get(
+            "/api/v1/local/tiger/invoice-events/pending",
+            headers={"X-Integration-Key": "tiger-secret"},
+        )
+        tiger_errors = client.get(
+            "/api/v1/local/tiger/invoice-events?status=error",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        one_c_pending = client.get(
+            "/api/v1/local/1c/payment-events/pending",
+            headers={"X-Integration-Key": "1c-secret"},
+        )
+
+    assert webhook.status_code == 200
+    assert tiger_pending.status_code == 200
+    assert tiger_pending.json() == []
+    assert tiger_errors.status_code == 200
+    assert tiger_errors.json()[0]["status"] == "error"
+    assert tiger_errors.json()[0]["invoice_id"] == invoice_id
+    assert "targetBankAccountCode" in tiger_errors.json()[0]["error_message"]
+    assert one_c_pending.status_code == 200
+    assert one_c_pending.json()[0]["payment_id"] == "MKSA-TIGER-INVALID-1"
+
+
+def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
     invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    seed_waiting_transaction(
+        store,
+        "MKSA-1C-RESULT-1",
+        amount=1500000,
+        invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id, "print_qr_code": "mbank"},
+    )
+    app = create_app(
+        settings=make_settings(db_path),
+        client=FakeMKassaClient(),
+        store=store,
+    )
 
     with TestClient(app) as client:
         payload = {
@@ -1328,17 +1607,17 @@ def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> No
         duplicate_webhook = client.post("/api/v1/webhooks/mkassa", json=payload)
         pending = client.get(
             "/api/v1/local/1c/payment-events/pending",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "1c-secret"},
         )
         event_id = pending.json()[0]["id"]
         failed_result = client.post(
             f"/api/v1/local/1c/payment-events/{event_id}/result",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "1c-secret"},
             json={"success": False, "error_message": "1C document is locked"},
         )
         retry_pending = client.get(
             "/api/v1/local/1c/payment-events/pending",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "1c-secret"},
         )
         retry_reset = client.post(
             f"/api/v1/local/1c/payment-events/{event_id}/reset",
@@ -1346,16 +1625,16 @@ def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> No
         )
         reset_pending = client.get(
             "/api/v1/local/1c/payment-events/pending",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "1c-secret"},
         )
         result = client.post(
             f"/api/v1/local/1c/payment-events/{event_id}/result",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "1c-secret"},
             json={"success": True, "one_c_document_id": "1C-PAYMENT-1001"},
         )
         after_success = client.get(
             "/api/v1/local/1c/payment-events/pending",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "1c-secret"},
         )
         admin_mixed_statuses = client.get(
             "/api/v1/local/1c/payment-events?status=pending&status=success",
@@ -1411,33 +1690,50 @@ def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> No
 
 def test_one_c_keeps_each_paid_transaction_while_tiger_keeps_one_invoice(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    for transaction_id in ("PAID-BANK-A", "PAID-BANK-B"):
+        seed_waiting_transaction(
+            store,
+            transaction_id,
+            amount=10000,
+            invoice_id=invoice_id,
+            metadata={"invoice_id": invoice_id},
+        )
     app = create_app(
         settings=make_settings(db_path),
         client=FakeMKassaClient(),
-        store=SQLitePaymentStore(db_path),
+        store=store,
     )
-    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
 
     with TestClient(app) as client:
-        for transaction_id in ("PAID-BANK-A", "PAID-BANK-B"):
+        for transaction_id, bank_account_code in (
+            ("PAID-BANK-A", "BANK-A-KGS"),
+            ("PAID-BANK-B", "BANK-B-KGS"),
+        ):
             response = client.post(
                 "/api/v1/webhooks/mkassa",
                 json={
                     "id": transaction_id,
                     "status": "paid",
                     "amount": 10000,
-                    "metadata": {"invoice_id": invoice_id},
+                    "paid_at": "2026-06-24T10:30:00+06:00",
+                    "metadata": {
+                        "invoice_id": invoice_id,
+                        "client_code": "CARI.001",
+                        "tiger_bank_account_code": bank_account_code,
+                    },
                 },
             )
             assert response.status_code == 200
 
         one_c_pending = client.get(
             "/api/v1/local/1c/payment-events/pending",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "1c-secret"},
         )
         tiger_pending = client.get(
             "/api/v1/local/tiger/invoice-events/pending",
-            headers={"X-Integration-Key": "erp-secret"},
+            headers={"X-Integration-Key": "tiger-secret"},
         )
 
     assert {item["payment_id"] for item in one_c_pending.json()} == {
@@ -1446,6 +1742,117 @@ def test_one_c_keeps_each_paid_transaction_while_tiger_keeps_one_invoice(tmp_pat
     }
     assert len(tiger_pending.json()) == 1
     assert tiger_pending.json()[0]["invoice_id"] == invoice_id
+    assert tiger_pending.json()[0]["paid_transaction_id"] == "PAID-BANK-A"
+    assert tiger_pending.json()[0]["target_bank_account_code"] == "BANK-A-KGS"
+
+
+def test_invoice_qr_rejects_existing_qr_amount_mismatch(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    store.initialize()
+    waiting_invoice_id = "550e8400-e29b-41d4-a716-446655440001"
+    paid_invoice_id = "550e8400-e29b-41d4-a716-446655440002"
+    store.upsert_transaction(
+        transaction_id="MBANK-WAITING-AMOUNT",
+        status="waiting",
+        transaction_type="qr",
+        amount=10000,
+        external_invoice_id=waiting_invoice_id,
+        metadata={"invoice_id": waiting_invoice_id, "print_qr_code": "mbank"},
+        raw_payload={"id": "MBANK-WAITING-AMOUNT"},
+        provider="mkassa",
+    )
+    store.upsert_transaction(
+        transaction_id="MBANK-PAID-AMOUNT",
+        status="paid",
+        transaction_type="qr",
+        amount=10000,
+        external_invoice_id=paid_invoice_id,
+        metadata={"invoice_id": paid_invoice_id, "print_qr_code": "mbank"},
+        raw_payload={"id": "MBANK-PAID-AMOUNT"},
+        provider="mkassa",
+    )
+    mkassa = FakeProvider("mkassa", "MBANK-NEW")
+    odengi = FakeProvider("odengi", "OBANK-NEW")
+    app = create_app(
+        settings=make_multi_provider_settings(db_path),
+        providers=[mkassa, odengi],
+        store=store,
+    )
+
+    with TestClient(app) as client:
+        configured = client.put(
+            "/api/v1/admin/print-qr-codes",
+            headers={"X-Admin-Key": "admin-secret"},
+            json={
+                "items": [
+                    {
+                        "code": "mbank",
+                        "label": "MBank",
+                        "provider": "mkassa",
+                        "enabled": True,
+                        "slot": 1,
+                        "sort_order": 10,
+                        "tiger_bank_account_code": "102.MBANK",
+                    },
+                    {
+                        "code": "obank",
+                        "label": "О!Банк",
+                        "provider": "odengi",
+                        "enabled": True,
+                        "slot": 2,
+                        "sort_order": 20,
+                        "tiger_bank_account_code": "102.OBANK",
+                    },
+                    {
+                        "code": "qr_3",
+                        "label": "QR 3",
+                        "provider": "mkassa",
+                        "enabled": False,
+                        "slot": 3,
+                        "sort_order": 30,
+                        "tiger_bank_account_code": None,
+                    },
+                    {
+                        "code": "qr_4",
+                        "label": "QR 4",
+                        "provider": "odengi",
+                        "enabled": False,
+                        "slot": 4,
+                        "sort_order": 40,
+                        "tiger_bank_account_code": None,
+                    },
+                ]
+            },
+        )
+        waiting = client.post(
+            "/api/v1/invoice/qr-codes",
+            headers={"X-Integration-Key": "1c-secret"},
+            json={
+                "amount": 20000,
+                "invoice_id": waiting_invoice_id,
+                "invoice_number": "TIGER-WAITING-AMOUNT",
+                "client_code": "120.TEST.001",
+            },
+        )
+        paid = client.post(
+            "/api/v1/invoice/qr-codes",
+            headers={"X-Integration-Key": "1c-secret"},
+            json={
+                "amount": 20000,
+                "invoice_id": paid_invoice_id,
+                "invoice_number": "TIGER-PAID-AMOUNT",
+                "client_code": "120.TEST.001",
+            },
+        )
+
+    assert configured.status_code == 200
+    assert waiting.status_code == 409
+    assert "amount does not match" in waiting.json()["detail"]
+    assert paid.status_code == 409
+    assert "amount does not match" in paid.json()["detail"]
+    assert mkassa.dynamic_create_count == 0
+    assert odengi.dynamic_create_count == 0
 
 
 def test_tiger_event_preview_rejects_unpaid_transaction(tmp_path: Path) -> None:
@@ -1488,6 +1895,7 @@ def test_paid_webhook_cancels_other_active_transaction_for_same_invoice(tmp_path
         transaction_id="MBANK-1",
         status="waiting",
         transaction_type="qr",
+        amount=100,
         external_invoice_id=invoice_id,
         metadata={"invoice_id": invoice_id, "print_qr_code": "mbank"},
         raw_payload={"id": "MBANK-1"},
@@ -1530,7 +1938,7 @@ def test_paid_webhook_cancels_other_active_transaction_for_same_invoice(tmp_path
         )
         one_c_pending = client.get(
             "/api/v1/local/1c/payment-events/pending",
-            headers={"X-Integration-Key": "mkassa-secret"},
+            headers={"X-Integration-Key": "1c-secret"},
         )
 
     assert webhook.status_code == 200
@@ -1645,10 +2053,19 @@ def test_admin_qr_demo_accepts_provider_query(tmp_path: Path) -> None:
 
 
 def test_odengi_webhook_is_public_and_updates_order_id_transaction(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    seed_waiting_transaction(
+        store,
+        "TIGER-1",
+        amount=100,
+        metadata={"invoice_number": "TIGER-1", "source": "tiger"},
+        provider="odengi",
+    )
     app = create_app(
-        settings=make_multi_provider_settings(tmp_path / "app.db"),
+        settings=make_multi_provider_settings(db_path),
         providers=[FakeProvider("mkassa", "MKSA-1"), FakeProvider("odengi", "TIGER-1")],
-        store=SQLitePaymentStore(tmp_path / "app.db"),
+        store=store,
     )
     payload = {
         "trans_id": "754147413495",

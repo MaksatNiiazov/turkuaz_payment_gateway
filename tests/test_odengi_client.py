@@ -110,6 +110,33 @@ async def test_create_dynamic_qr_sends_signed_odengi_request() -> None:
     assert response.link_app == "https://o.kg/l/a?t=wl_unpbill&id=172030403548"
 
 
+def test_odengi_order_id_includes_print_qr_code_for_invoice_bundles() -> None:
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    mbank_order_id = AsyncODengiClient._order_id(
+        {"invoice_id": invoice_id, "print_qr_code": "mbank"}
+    )
+    obank_order_id = AsyncODengiClient._order_id(
+        {"invoice_id": invoice_id, "print_qr_code": "obank"}
+    )
+
+    assert mbank_order_id == f"{invoice_id}-mbank"
+    assert obank_order_id == f"{invoice_id}-obank"
+    assert mbank_order_id != obank_order_id
+
+
+def test_odengi_order_id_keeps_provider_limit_with_hash_suffix() -> None:
+    invoice_id = "INV-" + ("1234567890" * 8)
+
+    order_id = AsyncODengiClient._order_id(
+        {"invoice_id": invoice_id, "print_qr_code": "obank"}
+    )
+
+    assert len(order_id) == 64
+    assert order_id.startswith(invoice_id[:43])
+    assert order_id[43] == "-"
+
+
 @pytest.mark.asyncio
 async def test_get_transaction_maps_odengi_status_payment() -> None:
     async def handler(_: httpx.Request) -> httpx.Response:

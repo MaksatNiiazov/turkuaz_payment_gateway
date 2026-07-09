@@ -25,6 +25,10 @@ PAID_STATUS = "paid"
 logger = logging.getLogger(__name__)
 
 
+class InvoiceQRCodeReuseError(ValueError):
+    """Existing invoice QR cannot be reused safely."""
+
+
 class PaymentService:
     def __init__(self, *, gateway: PaymentGateway, store: PaymentStore) -> None:
         self.gateway = gateway
@@ -57,6 +61,12 @@ class PaymentService:
             statuses=REUSABLE_INVOICE_QR_STATUSES,
         )
         if existing is not None:
+            existing_amount = existing.get("amount")
+            if existing_amount != payload.amount:
+                raise InvoiceQRCodeReuseError(
+                    "Existing QR amount does not match current invoice amount. "
+                    "Cancel or reset the old QR before printing a new invoice QR."
+                )
             merged = self.store.merge_transaction_metadata(
                 str(existing["id"]),
                 payload.metadata or {},
@@ -175,8 +185,14 @@ class PaymentService:
         if not isinstance(external_invoice_id, str) or not external_invoice_id.strip():
             return
 
-        self.store.upsert_tiger_invoice_export(build_tiger_invoice_event(paid_transaction))
         self.store.upsert_one_c_payment_export(build_one_c_payment_event(paid_transaction))
+        tiger_event = build_tiger_invoice_event(paid_transaction)
+        tiger_validation_error = validate_tiger_invoice_event(tiger_event)
+        self.store.upsert_tiger_invoice_export(
+            tiger_event,
+            status="error" if tiger_validation_error else "pending",
+            error_message=tiger_validation_error,
+        )
 
         related_transactions = self.store.list_invoice_transactions_for_cancel(
             external_invoice_id=external_invoice_id,
@@ -258,6 +274,31 @@ def build_one_c_payment_event(transaction: dict) -> dict[str, object]:
     }
     event["status"] = PAID_STATUS
     return event
+
+
+def validate_tiger_invoice_event(event: dict[str, object]) -> str | None:
+    required_fields = {
+        "invoiceId": "invoiceId is required.",
+        "paidTransactionId": "paidTransactionId is required.",
+        "paidAt": "paidAt is required.",
+        "amountTyiyn": "amountTyiyn is required.",
+        "targetBankAccountCode": "targetBankAccountCode must contain the Tiger BANKACC.CODE.",
+        "clientCode": "clientCode is required.",
+    }
+    for field, message in required_fields.items():
+        value = event.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return message
+
+    amount_tyiyn = event.get("amountTyiyn")
+    if not isinstance(amount_tyiyn, int) or amount_tyiyn <= 0:
+        return "amountTyiyn must be a positive integer."
+
+    currency = event.get("currency")
+    if not isinstance(currency, str) or currency.upper() != "KGS":
+        return "Only KGS bank vouchers are currently supported."
+
+    return None
 
 
 def _paid_payment_fields(transaction: dict) -> dict[str, object]:

@@ -108,10 +108,11 @@ AUTO_CREATE_SCHEMA=false DATABASE_URL=sqlite:///./data/payment_gateway.db \
 
 ## Основные endpoint'ы
 
-Интеграционные endpoint'ы для 1С, сайта, POS и ERP защищаются пулом ключей `INTEGRATION_KEYS`.
+Интеграционные endpoint'ы для 1С, Tiger worker, сайта и POS защищаются пулом
+ключей `INTEGRATION_KEYS`.
 
 ```env
-INTEGRATION_KEYS=1c:secret-for-1c,site:secret-for-site,pos:secret-for-pos
+INTEGRATION_KEYS=1c:secret-for-1c,tiger:secret-for-tiger,site:secret-for-site,pos:secret-for-pos
 ```
 
 Клиентские системы передают только значение ключа:
@@ -120,7 +121,9 @@ INTEGRATION_KEYS=1c:secret-for-1c,site:secret-for-site,pos:secret-for-pos
 X-Integration-Key: secret-for-1c
 ```
 
-Сервис распознает владельца ключа как внутреннюю метку `integration_name=1c`. Это не логин и не передается клиентом отдельно. Для одного ключа используйте тот же формат, например `INTEGRATION_KEYS=1c:secret-for-1c`.
+Сервис распознает владельца ключа как внутреннюю метку `integration_name=1c`.
+Это не логин и не передается клиентом отдельно. Для одного ключа используйте тот
+же формат, например `INTEGRATION_KEYS=1c:secret-for-1c`.
 
 Provider выбирается внутри backend. По умолчанию используется `DEFAULT_PAYMENT_PROVIDER`.
 Для разделения по владельцу ключа задайте:
@@ -132,9 +135,18 @@ PAYMENT_PROVIDER_BY_INTEGRATION=1c_obank:odengi,site:mkassa,pos:odengi
 
 Внешние клиенты все равно передают только `X-Integration-Key`, без отдельного `provider`.
 
+Очереди `/api/v1/local/1c/...` доступны только ключу с именем `1c`, а
+`/api/v1/local/tiger/...` - только ключу с именем `tiger`. Обычные POS/site
+ключи не могут читать или подтверждать эти очереди.
+
 Админские endpoints `/api/v1/local/...` и `/api/v1/admin/...` принимают либо
 `Authorization: Bearer <identity_access_token>`, либо серверный `X-Admin-Key`
 из `PAYMENT_ADMIN_API_KEY`. Этот ключ не нужно передавать интеграторам.
+
+Webhook'и банков не требуют `X-Integration-Key` и принимаются по URL без
+дополнительного secret-параметра. Backend сохраняет callback в журнал, но
+обновляет оплату только если транзакция с таким `id` уже была создана нашим
+сервисом.
 
 | Метод | URL | Назначение |
 | --- | --- | --- |
@@ -151,9 +163,9 @@ PAYMENT_PROVIDER_BY_INTEGRATION=1c_obank:odengi,site:mkassa,pos:odengi
 | `POST` | `/api/v1/webhooks/mkassa` | Принять callback от MKassa |
 | `POST` | `/api/v1/webhooks/odengi` | Принять callback/result_url от О!Деньги |
 | `GET` | `/api/v1/integration` | Проверить, какой `integration_name` распознан по ключу |
-| `GET` | `/api/v1/local/tiger/invoice-events/pending` | Для Tiger worker: забрать оплаченные счета на экспорт или повтор |
+| `GET` | `/api/v1/local/tiger/invoice-events/pending` | Для Tiger worker: забрать оплаченные счета на экспорт |
 | `POST` | `/api/v1/local/tiger/invoice-events/{event_id}/result` | Для Tiger worker: сохранить результат экспорта в Tiger |
-| `GET` | `/api/v1/local/1c/payment-events/pending` | Для 1С: забрать успешные оплаты или ошибки для повтора |
+| `GET` | `/api/v1/local/1c/payment-events/pending` | Для 1С: забрать успешные оплаты |
 | `POST` | `/api/v1/local/1c/payment-events/{event_id}/result` | Для 1С: подтвердить импорт оплаты или сообщить ошибку |
 | `GET` | `/api/v1/local/transactions/{transaction_id}` | Посмотреть сохраненное локальное состояние |
 | `GET` | `/api/v1/local/transactions/{transaction_id}/tiger-event-preview` | Посмотреть JSON события оплаченного счета для Tiger |
@@ -182,9 +194,13 @@ invoice, но внутри события будет указано, какой 
 `paidProvider`, `paidTransactionId`, `providerPaymentId`, `targetBankCode`,
 `targetBankAccountCode`.
 
-`invoiceId` является ключом идемпотентности для Tiger. После успешной выгрузки
-worker отправляет результат в `/api/v1/local/tiger/invoice-events/{event_id}/result`.
-Если нужно выгрузить повторно, админ может сбросить событие endpoint'ом
+`invoiceId` является ключом идемпотентности для Tiger. Backend не ставит событие
+в `pending`, если для Tiger не хватает обязательных полей `paidAt`,
+`targetBankAccountCode`, `clientCode` или сумма/валюта не поддержаны: такое
+событие остается в статусе `error` в админском списке до исправления данных и
+ручного reset. После успешной выгрузки worker отправляет результат в
+`/api/v1/local/tiger/invoice-events/{event_id}/result`. Если нужно выгрузить
+повторно, админ может сбросить событие endpoint'ом
 `/api/v1/local/tiger/invoice-events/{event_id}/reset`.
 
 ### Передача успешных оплат в 1С
@@ -196,8 +212,11 @@ worker отправляет результат в `/api/v1/local/tiger/invoice-e
 
 1С забирает очередь методом `GET /api/v1/local/1c/payment-events/pending`,
 обрабатывает `event_payload`, затем подтверждает результат через
-`POST /api/v1/local/1c/payment-events/{event_id}/result`. Одна и та же процедура
-1С может вызываться регламентным заданием и кнопкой «Загрузить оплаты».
+`POST /api/v1/local/1c/payment-events/{event_id}/result`. Если 1С возвращает
+ошибку, событие уходит в `error` и не выдается повторно до админского reset.
+Одна и та же процедура 1С может вызываться регламентным заданием и кнопкой
+«Загрузить оплаты», но в 1С должна быть реальная блокировка от параллельного
+запуска.
 
 Ключ идемпотентности для 1С — `paymentId`. Перед созданием документа 1С должна
 проверить, не импортировала ли она этот `paymentId` ранее. `invoiceId` используется
