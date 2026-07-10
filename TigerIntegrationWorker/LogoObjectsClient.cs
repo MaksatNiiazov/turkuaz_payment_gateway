@@ -200,6 +200,157 @@ public sealed class LogoObjectsClient
         }
     }
 
+    public AppendStrategyDebugResult TestAppendStrategy(
+        string strategy,
+        AppendStrategyDebugRequest? request)
+    {
+        var normalizedStrategy = strategy.Trim().ToLowerInvariant();
+        var targetBankAccountCode = request?.TargetBankAccountCode ?? "10200 100.01.001";
+        var clientCode = request?.ClientCode ?? "120.04.2.01.1451";
+        var amount = request?.Amount ?? 1m;
+        var appendCount = Math.Clamp(request?.AppendCount ?? 1, 1, 10);
+        var documentDate = ResolveDebugDocumentDate(request?.DocumentDate);
+        var runId = DateTime.Now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+        var groupMarker = $"PGT:{runId}";
+        var firstLineMarker = BuildLineMarker($"append-debug:{runId}:base");
+        var secondLineMarker = BuildLineMarker($"append-debug:{runId}:{normalizedStrategy}");
+        var expectedLineMarkers = new List<string> { firstLineMarker };
+        var firstInvoice = BuildDebugInvoice(
+            $"append-debug-{runId}-base",
+            targetBankAccountCode,
+            clientCode,
+            documentDate,
+            amount);
+
+        lock (_comLock)
+        {
+            object? logo = null;
+            try
+            {
+                EnsureAppendDebugIsAllowed();
+                logo = CreateUnityApplication();
+                ConnectAndLogin(logo);
+
+                var created = CreateGroupedVoucher(
+                    logo,
+                    firstInvoice,
+                    documentDate,
+                    groupMarker,
+                    firstLineMarker);
+                if (!created.Success || created.TigerLogicalRef is null)
+                {
+                    return new AppendStrategyDebugResult(
+                        false,
+                        normalizedStrategy,
+                        groupMarker,
+                        firstLineMarker,
+                        secondLineMarker,
+                        expectedLineMarkers,
+                        created.TigerLogicalRef,
+                        created.TigerFicheNo,
+                        ListVoucherSnapshotsByGroupMarker(logo, groupMarker),
+                        created.Error ?? "Base voucher was not created.");
+                }
+
+                try
+                {
+                    for (var appendIndex = 1; appendIndex <= appendCount; appendIndex++)
+                    {
+                        var lineMarker = appendIndex == 1
+                            ? secondLineMarker
+                            : BuildLineMarker($"append-debug:{runId}:{normalizedStrategy}:{appendIndex}");
+                        expectedLineMarkers.Add(lineMarker);
+                        var appendInvoice = BuildDebugInvoice(
+                            $"append-debug-{runId}-{normalizedStrategy}-{appendIndex}",
+                            targetBankAccountCode,
+                            clientCode,
+                            documentDate,
+                            amount);
+
+                        switch (normalizedStrategy)
+                        {
+                            case "full-export-upd":
+                                AppendToGroupedVoucher(
+                                    logo,
+                                    appendInvoice,
+                                    created.TigerLogicalRef.Value,
+                                    created.TigerFicheNo ?? string.Empty,
+                                    documentDate,
+                                    groupMarker,
+                                    lineMarker);
+                                break;
+                            case "minimal-upd-one-line":
+                                AppendWithMinimalUpdateXml(
+                                    logo,
+                                    appendInvoice,
+                                    created.TigerLogicalRef.Value,
+                                    documentDate,
+                                    groupMarker,
+                                    lineMarker);
+                                break;
+                            case "appendline-read-post":
+                                AppendWithComLinesCollection(
+                                    logo,
+                                    appendInvoice,
+                                    created.TigerLogicalRef.Value,
+                                    documentDate,
+                                    groupMarker,
+                                    lineMarker);
+                                break;
+                            default:
+                                throw new InvalidOperationException(
+                                    "Unknown append strategy. Use full-export-upd, minimal-upd-one-line, or appendline-read-post.");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return new AppendStrategyDebugResult(
+                        false,
+                        normalizedStrategy,
+                        groupMarker,
+                        firstLineMarker,
+                        secondLineMarker,
+                        expectedLineMarkers,
+                        created.TigerLogicalRef,
+                        created.TigerFicheNo,
+                        ListVoucherSnapshotsByGroupMarker(logo, groupMarker),
+                        ex.Message);
+                }
+
+                var snapshots = ListVoucherSnapshotsByGroupMarker(logo, groupMarker);
+                return BuildAppendDebugResult(
+                    normalizedStrategy,
+                    groupMarker,
+                    firstLineMarker,
+                    secondLineMarker,
+                    expectedLineMarkers,
+                    created.TigerLogicalRef,
+                    created.TigerFicheNo,
+                    snapshots,
+                    amount);
+            }
+            catch (Exception ex)
+            {
+                return new AppendStrategyDebugResult(
+                    false,
+                    normalizedStrategy,
+                    groupMarker,
+                    firstLineMarker,
+                    secondLineMarker,
+                    expectedLineMarkers,
+                    null,
+                    null,
+                    [],
+                    ex.Message);
+            }
+            finally
+            {
+                LogoutAndRelease(logo);
+            }
+        }
+    }
+
     private InvoiceProcessResult CreateGroupedVoucher(
         dynamic logo,
         InvoicePaidEvent invoice,
@@ -410,6 +561,147 @@ public sealed class LogoObjectsClient
         }
     }
 
+    private void AppendWithMinimalUpdateXml(
+        dynamic logo,
+        InvoicePaidEvent invoice,
+        int voucherRef,
+        DateOnly documentDate,
+        string groupMarker,
+        string lineMarker)
+    {
+        var before = ReadVoucherSummary(logo, voucherRef);
+        var xml = BuildMinimalBankVoucherUpdateXml(invoice, documentDate, before, groupMarker, lineMarker);
+        dynamic? data = null;
+        try
+        {
+            data = logo.NewDataObject(BankVoucherDataObjectType);
+            if (!(bool)data.ImportFromXmlStr("BANK_VOUCHERS", xml))
+            {
+                throw new InvalidOperationException(BuildDataError(data, "Minimal update XML import failed"));
+            }
+            if (!(bool)data.Post())
+            {
+                throw new InvalidOperationException(BuildDataError(data, "Minimal update Post failed"));
+            }
+            VerifyExpectedAppendResult(logo, voucherRef, lineMarker, before, invoice.Amount);
+        }
+        finally
+        {
+            Release(data);
+        }
+    }
+
+    private void AppendWithComLinesCollection(
+        dynamic logo,
+        InvoicePaidEvent invoice,
+        int voucherRef,
+        DateOnly documentDate,
+        string groupMarker,
+        string lineMarker)
+    {
+        var before = ReadVoucherSummary(logo, voucherRef);
+        if (!string.Equals(before.GroupMarker, groupMarker, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Voucher {voucherRef} marker mismatch. Expected {groupMarker}, got {before.GroupMarker}.");
+        }
+
+        dynamic? data = null;
+        try
+        {
+            data = logo.NewDataObject(BankVoucherDataObjectType);
+            if (!(bool)data.Read(voucherRef))
+            {
+                throw new InvalidOperationException($"Read failed for voucher {voucherRef}.");
+            }
+
+            var transactions = data.DataFields.FieldByName("TRANSACTIONS");
+            dynamic lines = transactions.Lines;
+            var beforeCount = Convert.ToInt32(lines.Count, CultureInfo.InvariantCulture);
+            if (!(bool)lines.AppendLine())
+            {
+                throw new InvalidOperationException("TRANSACTIONS.AppendLine returned false.");
+            }
+
+            dynamic newLine = lines.Item(beforeCount);
+            ApplyTransactionDataFields(newLine, invoice, documentDate, lineMarker);
+            data.DataFields.FieldByName("TOTAL_DEBIT").Value = FormatAmount(before.LineAmountSum + invoice.Amount);
+            data.DataFields.FieldByName("NOTES1").Value = groupMarker;
+
+            if (!(bool)data.Post())
+            {
+                throw new InvalidOperationException(BuildDataError(data, "AppendLine Post failed"));
+            }
+            VerifyExpectedAppendResult(logo, voucherRef, lineMarker, before, invoice.Amount);
+        }
+        finally
+        {
+            Release(data);
+        }
+    }
+
+    private void VerifyExpectedAppendResult(
+        dynamic logo,
+        int voucherRef,
+        string lineMarker,
+        VoucherSummary before,
+        decimal addedAmount)
+    {
+        var after = ReadVoucherSummary(logo, voucherRef);
+        var expectedTotal = before.LineAmountSum + addedAmount;
+        if (after.LineCount != before.LineCount + 1)
+        {
+            throw new InvalidOperationException(
+                $"Line count changed incorrectly for voucher {voucherRef}. Before={before.LineCount}, after={after.LineCount}.");
+        }
+        if (after.LineAmountSum != expectedTotal)
+        {
+            throw new InvalidOperationException(
+                $"Amount changed incorrectly for voucher {voucherRef}. Expected={expectedTotal}, actual={after.LineAmountSum}.");
+        }
+        var verification = VerifyLinePersisted(logo, voucherRef, lineMarker, expectedAmount: addedAmount);
+        if (!verification.Found)
+        {
+            throw new InvalidOperationException($"Line marker {lineMarker} was not found in voucher {voucherRef}.");
+        }
+    }
+
+    private static AppendStrategyDebugResult BuildAppendDebugResult(
+        string strategy,
+        string groupMarker,
+        string firstLineMarker,
+        string secondLineMarker,
+        IReadOnlyList<string> expectedLineMarkers,
+        int? baseVoucherRef,
+        string? baseFicheNo,
+        IReadOnlyList<VoucherDebugSnapshot> snapshots,
+        decimal amount)
+    {
+        var expectedSum = amount * expectedLineMarkers.Count;
+        var safeSnapshot = snapshots.Count == 1 ? snapshots[0] : null;
+        var isSafe = safeSnapshot is not null &&
+            safeSnapshot.LineCount == expectedLineMarkers.Count &&
+            safeSnapshot.LineAmountSum == expectedSum &&
+            expectedLineMarkers.All(expected =>
+                safeSnapshot.LineMarkers.Count(actual => actual == expected) == 1);
+
+        var error = isSafe
+            ? null
+            : "Unsafe append result. Expected exactly one voucher snapshot with expected line count, expected sum, and every line marker once.";
+
+        return new AppendStrategyDebugResult(
+            isSafe,
+            strategy,
+            groupMarker,
+            firstLineMarker,
+            secondLineMarker,
+            expectedLineMarkers,
+            baseVoucherRef,
+            baseFicheNo,
+            snapshots,
+            error);
+    }
+
     private string? ValidateInvoice(InvoicePaidEvent invoice)
     {
         if (string.IsNullOrWhiteSpace(invoice.InvoiceId)) return "invoiceId is required.";
@@ -422,6 +714,133 @@ public sealed class LogoObjectsClient
         if (string.IsNullOrWhiteSpace(invoice.TargetBankAccountCode))
             return "targetBankAccountCode must contain the Tiger BANKACC.CODE.";
         return null;
+    }
+
+    private void EnsureAppendDebugIsAllowed()
+    {
+        if (_options.FirmNo != 923)
+        {
+            throw new InvalidOperationException("Append strategy debug can only run against test firm 923.");
+        }
+        if (_options.DryRun)
+        {
+            throw new InvalidOperationException("Append strategy debug requires Tiger:DryRun=false.");
+        }
+        if (!_options.AllowedWriteFirmNos.Contains(923))
+        {
+            throw new InvalidOperationException(
+                "Append strategy debug requires Tiger:AllowedWriteFirmNos to contain 923.");
+        }
+    }
+
+    private DateOnly ResolveDebugDocumentDate(string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value) &&
+            DateOnly.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+        {
+            return parsed;
+        }
+        if (_options.TestDocumentDateOverride is not null)
+        {
+            return _options.TestDocumentDateOverride.Value;
+        }
+        return new DateOnly(2024, 5, 31);
+    }
+
+    private static InvoicePaidEvent BuildDebugInvoice(
+        string invoiceId,
+        string targetBankAccountCode,
+        string clientCode,
+        DateOnly date,
+        decimal amount) =>
+        new(
+            invoiceId,
+            invoiceId,
+            invoiceId,
+            "debug",
+            invoiceId,
+            "DEBUG",
+            targetBankAccountCode,
+            new DateTimeOffset(date.ToDateTime(TimeOnly.FromTimeSpan(TimeSpan.FromHours(12))), TimeSpan.FromHours(6)),
+            (long)(amount * 100),
+            amount,
+            "KGS",
+            clientCode,
+            "Append Debug",
+            "debug",
+            $"Append strategy debug {invoiceId}");
+
+    private IReadOnlyList<VoucherDebugSnapshot> ListVoucherSnapshotsByGroupMarker(
+        dynamic logo,
+        string groupMarker)
+    {
+        dynamic? query = null;
+        try
+        {
+            query = logo.NewQuery();
+            query.Statement = $"""
+SELECT
+    H.LOGICALREF AS FICHE_REF,
+    H.FICHENO,
+    H.DEBITTOT,
+    H.GENEXP1,
+    L.LOGICALREF AS LINE_REF,
+    L.AMOUNT,
+    L.LINEEXP
+FROM LG_{_options.FirmNo:000}_{_options.PeriodNo:00}_BNFICHE AS H
+LEFT JOIN LG_{_options.FirmNo:000}_{_options.PeriodNo:00}_BNFLINE AS L
+    ON L.SOURCEFREF = H.LOGICALREF AND L.CANCELLED = 0
+WHERE H.CANCELLED = 0 AND H.GENEXP1 = '{EscapeSqlLiteral(groupMarker)}'
+ORDER BY H.LOGICALREF, L.LOGICALREF
+""";
+            if (!(bool)query.OpenDirect())
+            {
+                return [];
+            }
+
+            var snapshots = new Dictionary<int, MutableVoucherDebugSnapshot>();
+            var hasRow = (bool)query.First();
+            while (hasRow)
+            {
+                var logicalRef = Convert.ToInt32(query.FieldByName("FICHE_REF").Value, CultureInfo.InvariantCulture);
+                if (!snapshots.TryGetValue(logicalRef, out MutableVoucherDebugSnapshot? snapshot))
+                {
+                    snapshot = new MutableVoucherDebugSnapshot(
+                        logicalRef,
+                        Convert.ToString(query.FieldByName("FICHENO").Value, CultureInfo.InvariantCulture) ?? string.Empty,
+                        Convert.ToDecimal(query.FieldByName("DEBITTOT").Value, CultureInfo.InvariantCulture),
+                        Convert.ToString(query.FieldByName("GENEXP1").Value, CultureInfo.InvariantCulture) ?? string.Empty);
+                    snapshots.Add(logicalRef, snapshot);
+                }
+
+                var lineRef = query.FieldByName("LINE_REF").Value;
+                if (lineRef is not null && lineRef is not DBNull)
+                {
+                    snapshot!.LineCount++;
+                    snapshot.LineAmountSum += Convert.ToDecimal(query.FieldByName("AMOUNT").Value, CultureInfo.InvariantCulture);
+                    snapshot.LineMarkers.Add(
+                        Convert.ToString(query.FieldByName("LINEEXP").Value, CultureInfo.InvariantCulture) ?? string.Empty);
+                }
+
+                hasRow = (bool)query.Next();
+            }
+
+            return snapshots.Values
+                .Select(item => new VoucherDebugSnapshot(
+                    item.LogicalRef,
+                    item.FicheNo,
+                    item.HeaderDebit,
+                    item.GroupMarker,
+                    item.LineCount,
+                    item.LineAmountSum,
+                    item.LineMarkers))
+                .ToList();
+        }
+        finally
+        {
+            try { query?.Close(); } catch { }
+            Release(query);
+        }
     }
 
     private void EnsureWriteIsAllowed()
@@ -496,6 +915,62 @@ public sealed class LogoObjectsClient
             new XElement("DIVISION", "0"),
             new XElement("COSTTYPE", "1"),
             new XElement("DESCRIPTION", lineMarker));
+    }
+
+    private static string BuildMinimalBankVoucherUpdateXml(
+        InvoicePaidEvent invoice,
+        DateOnly date,
+        VoucherSummary before,
+        string groupMarker,
+        string lineMarker)
+    {
+        var document = new XDocument(
+            new XElement("BANK_VOUCHERS",
+                new XElement("BANK_VOUCHER",
+                    new XAttribute("DBOP", "UPD"),
+                    new XElement("DATA_REFERENCE", before.LogicalRef.ToString(CultureInfo.InvariantCulture)),
+                    new XElement("TYPE", "3"),
+                    new XElement("TOTAL_DEBIT", FormatAmount(before.LineAmountSum + invoice.Amount)),
+                    new XElement("NOTES1", groupMarker),
+                    new XElement("CURRSEL_TOTALS", "1"),
+                    new XElement("DIVISION", "0"),
+                    new XElement("DEPARMENT", "0"),
+                    new XElement("TRANSACTIONS",
+                        BuildTransactionElement(invoice, date, lineMarker)))));
+        return document.ToString(SaveOptions.DisableFormatting);
+    }
+
+    private static void ApplyTransactionDataFields(
+        dynamic dataFields,
+        InvoicePaidEvent invoice,
+        DateOnly date,
+        string lineMarker)
+    {
+        var dateText = FormatDate(date);
+        var amount = FormatAmount(invoice.Amount);
+        SetDataField(dataFields, "TYPE", "1");
+        SetDataField(dataFields, "BANKACC_CODE", CleanTigerCode(invoice.TargetBankAccountCode!));
+        SetDataField(dataFields, "ARP_CODE", CleanTigerCode(invoice.ClientCode!));
+        SetDataField(dataFields, "DATE", dateText);
+        SetDataField(dataFields, "TRCODE", "3");
+        SetDataField(dataFields, "MODULENR", "7");
+        SetDataField(dataFields, "CURR_TRANS", "37");
+        SetDataField(dataFields, "DEBIT", amount);
+        SetDataField(dataFields, "AMOUNT", amount);
+        SetDataField(dataFields, "TC_XRATE", "1");
+        SetDataField(dataFields, "TC_AMOUNT", amount);
+        SetDataField(dataFields, "BANK_PROC_TYPE", "2");
+        SetDataField(dataFields, "DUE_DATE", dateText);
+        SetDataField(dataFields, "AFFECT_RISK", "1");
+        SetDataField(dataFields, "BN_CRDTYPE", "3");
+        SetDataField(dataFields, "DIVISION", "0");
+        SetDataField(dataFields, "COSTTYPE", "1");
+        SetDataField(dataFields, "DESCRIPTION", lineMarker);
+    }
+
+    private static void SetDataField(dynamic dataFields, string name, string value)
+    {
+        dataFields.FieldByName(name).Value = value;
     }
 
     private static void PrepareExportedXmlForAppend(
@@ -882,4 +1357,19 @@ ORDER BY L.LOGICALREF DESC
         int? VoucherLineCount,
         int? LineRef,
         int? PaymentListCount);
+
+    private sealed class MutableVoucherDebugSnapshot(
+        int logicalRef,
+        string ficheNo,
+        decimal headerDebit,
+        string groupMarker)
+    {
+        public int LogicalRef { get; } = logicalRef;
+        public string FicheNo { get; } = ficheNo;
+        public decimal HeaderDebit { get; } = headerDebit;
+        public string GroupMarker { get; } = groupMarker;
+        public int LineCount { get; set; }
+        public decimal LineAmountSum { get; set; }
+        public List<string> LineMarkers { get; } = [];
+    }
 }

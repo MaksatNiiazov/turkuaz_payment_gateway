@@ -4,7 +4,7 @@ Small standalone Windows-only C# worker for Logo Tiger / LObjects integration.
 
 This worker must run on the Tiger Windows server where `LObjects.dll` is
 registered. It can poll paid invoice events from PaymentGateway and write them
-to grouped incoming bank vouchers through `doBankVoucher=24`.
+to incoming bank vouchers through `doBankVoucher=24`.
 
 This is a separate project from the Python/FastAPI PaymentGateway backend. Keep
 it in this folder and deploy it to the Windows Tiger server separately.
@@ -21,7 +21,7 @@ it in this folder and deploy it to the Windows Tiger server separately.
 - background poller - pulls pending events from PaymentGateway and reports the
   resulting Tiger logical reference and fiche number.
 
-The confirmed write paths are:
+The active write path is:
 
 ```text
 new bank/date group:
@@ -213,13 +213,13 @@ bank voucher is unsafe: `AppendLine()` added a row in memory and `Post()`
 returned true, but SQL read-back still showed the original line count; a
 hand-built minimal XML `DBOP="UPD"` also failed with `DBError=23000`.
 
-Appending to an existing voucher is confirmed only through Tiger's own exported
-XML shape: `Read(LOGICALREF)`, `ExportToXML("BANK_VOUCHERS", file)`, change the
-exported XML to `DBOP="UPD"`, add the new `TRANSACTION`, update `TOTAL_DEBIT`,
-then `ImportFromXmlStr("BANK_VOUCHERS", xml)` and `Post()`. In test firm
-`923/1`, this increased voucher `1006` from one line to two lines. The worker
-uses this path for daily `bank account + date` groups and verifies line
-marker/count/sum after every post.
+The production append strategy is Tiger's own exported XML shape:
+`Read(LOGICALREF)`, `ExportToXML("BANK_VOUCHERS", file)`, change the exported
+XML to `DBOP="UPD"`, add the new `TRANSACTION`, update `TOTAL_DEBIT`, then
+`ImportFromXmlStr("BANK_VOUCHERS", xml)` and `Post()`. In test firm `923/1`,
+the `full-export-upd` debug strategy was verified with `appendCount = 3`: one
+base voucher plus three append operations produced exactly one voucher, four
+lines, sum `4`, and every expected line marker exactly once.
 
 The minimal incoming voucher payload has been confirmed in test firm `923/1`:
 
@@ -238,6 +238,61 @@ serialized COM session: error `-13` means the runtime license is unavailable
 and `-93` means the terminal limit was exceeded. After `Post()`, call
 `Read(LOGICALREF)` again before checking `TRANSACTIONS`, because nested line
 objects are freed during the post.
+
+## Append Strategy Debug
+
+Use only on test firm `923/1`. The endpoint refuses to run unless
+`FirmNo=923`, `DryRun=false`, and `AllowedWriteFirmNos` contains `923`.
+Keep `Gateway:Enabled=false` while running these tests.
+
+Config:
+
+```json
+"FirmNo": 923,
+"PeriodNo": 1,
+"DryRun": false,
+"AllowedWriteFirmNos": [923],
+"TestDocumentDateOverride": "2024-05-31",
+"Gateway": { "Enabled": false }
+```
+
+Run the worker, then execute each strategy from another PowerShell:
+
+```powershell
+$headers = @{ "X-Integration-Key" = "use-a-long-random-secret" }
+$body = @{
+    targetBankAccountCode = "10200 100.01.001"
+    clientCode = "120.04.2.01.1451"
+    documentDate = "2024-05-31"
+    amount = 1
+    appendCount = 3
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method Post `
+    -Uri "http://127.0.0.1:5088/tiger/debug/append-strategy/full-export-upd" `
+    -Headers $headers -ContentType "application/json" -Body $body
+
+Invoke-RestMethod -Method Post `
+    -Uri "http://127.0.0.1:5088/tiger/debug/append-strategy/minimal-upd-one-line" `
+    -Headers $headers -ContentType "application/json" -Body $body
+
+Invoke-RestMethod -Method Post `
+    -Uri "http://127.0.0.1:5088/tiger/debug/append-strategy/appendline-read-post" `
+    -Headers $headers -ContentType "application/json" -Body $body
+```
+
+With `appendCount = 3`, the safe result has exactly one snapshot for the test
+`groupMarker`, with:
+
+```text
+LineCount = 4
+LineAmountSum = 4
+LineMarkers = every expectedLineMarkers value exactly once
+```
+
+If a strategy returns multiple snapshots for the same `groupMarker`, creates a
+copy voucher, or changes earlier unrelated vouchers, do not use it for
+production grouping.
 
 ## Safety
 

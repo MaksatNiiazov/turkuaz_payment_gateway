@@ -1112,22 +1112,33 @@ RESULT xml-update-export: OK
 `ImportFromXmlStr("BANK_VOUCHERS", xml)`, `Post()`, затем SQL/`Read`
 проверка количества строк и суммы.
 
-## Реализация Группировки В Worker
+## Повторная Проверка И Включение Группировки
 
-`TigerIntegrationWorker/LogoObjectsClient.cs` переведен с модели
-`1 invoice -> 1 BANK_VOUCHER` на дневную группировку по `bank account + date`:
+После экранной проверки в Tiger был добавлен диагностический endpoint
+`/tiger/debug/append-strategy/{strategy}`. Он создает тестовый ваучер в фирме
+`923/1`, выполняет выбранную стратегию append и читает `BNFICHE/BNFLINE` по
+уникальному `groupMarker`.
 
-- `BNFICHE.GENEXP1` / `NOTES1` хранит group marker `PGG:<yyyyMMdd>:<bankHash>`;
+Проверены три стратегии:
+
+- `appendline-read-post` - не подходит: COM append падает на дате;
+- `minimal-upd-one-line` - не подходит: Tiger возвращает ошибку финансового
+  года;
+- `full-export-upd` - подходит: при `appendCount = 3` получен один ваучер,
+  четыре строки, сумма `4`, все ожидаемые line marker сохранены ровно по
+  одному разу.
+
+Worker снова переведен на дневную группировку по `bank account + date`:
+
+- `BNFICHE.GENEXP1` / `NOTES1` хранит group marker
+  `PGG:<yyyyMMdd>:<bankHash>`;
 - `BNFLINE.LINEEXP` / `TRANSACTION.DESCRIPTION` хранит line marker
   `PG:<invoiceIdHash>`;
 - перед записью worker ищет существующую строку по line marker;
-- если дневной ваучер не найден, создается новый `BANK_VOUCHER` с первой
-  строкой;
-- если дневной ваучер найден, worker выполняет подтвержденный путь
+- если дневной ваучер не найден, создается новый `BANK_VOUCHER`;
+- если дневной ваучер найден, worker использует путь
   `Read -> ExportToXML -> modify exported XML -> ImportFromXmlStr -> Post`;
-- после `Post()` worker проверяет line marker, количество строк и сумму;
-- при исключении worker повторно ищет line marker, чтобы корректно обработать
-  случай, когда запись успела пройти, но ответ/проверка оборвались.
+- после `Post()` worker проверяет line marker, количество строк и сумму.
 
 COM-операции остаются сериализованными через `_comLock`. Прямых SQL-записей
 нет; `NewQuery/OpenDirect` используется только для read-only проверок.

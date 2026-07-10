@@ -36,6 +36,15 @@ app.MapPost("/api/invoices/paid", (InvoicePaidEvent invoice, LogoObjectsClient l
     return result.Success ? Results.Ok(result) : Results.BadRequest(result);
 }).RequireIntegrationKey();
 
+app.MapPost("/tiger/debug/append-strategy/{strategy}", (
+    string strategy,
+    AppendStrategyDebugRequest? request,
+    LogoObjectsClient logo) =>
+{
+    var result = logo.TestAppendStrategy(strategy, request);
+    return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+}).RequireIntegrationKey();
+
 app.Run();
 
 public static class IntegrationKeyEndpointExtensions

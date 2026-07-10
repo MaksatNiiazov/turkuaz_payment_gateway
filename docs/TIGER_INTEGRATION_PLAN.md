@@ -192,10 +192,12 @@ The confirmed append strategy for an already posted bank voucher is to let
 Tiger produce the update shape first: `Read(LOGICALREF)`,
 `ExportToXML("BANK_VOUCHERS", file)`, change the exported Tiger XML to
 `DBOP="UPD"`, add the new `TRANSACTION`, update `TOTAL_DEBIT`, then
-`ImportFromXmlStr("BANK_VOUCHERS", xml)` and `Post()`. In `923/1`, this
-increased voucher `1006` from one line/sum `1` to two lines/sum `3`. This makes
-daily grouping by bank technically feasible, provided each append is serialized
-and verified after posting.
+`ImportFromXmlStr("BANK_VOUCHERS", xml)` and `Post()`. In `923/1`, the
+`full-export-upd` debug strategy passed a repeated append test with one base
+voucher plus three appended payments: one voucher, four lines, total amount
+`4`, and every expected `BNFLINE.LINEEXP` marker exactly once. This makes daily
+grouping by bank technically feasible, provided each append is serialized and
+verified after posting.
 
 Logo Objects licensing is server-based but requires an installed runtime
 license. Error `-13` means the entitlement is missing and `-93` means the
