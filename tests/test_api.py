@@ -1131,6 +1131,35 @@ def test_integration_key_pool_identifies_integration_name(tmp_path: Path) -> Non
     assert [event["integration_name"] for event in events.json()] == ["tiger"]
 
 
+def test_admin_frontend_requests_are_not_recorded_as_integration_access(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        settings=make_settings(tmp_path / "app.db"),
+        client=FakeMKassaClient(),
+        store=SQLitePaymentStore(tmp_path / "app.db"),
+    )
+
+    with TestClient(app) as client:
+        admin_response = client.get(
+            "/api/v1/local/transactions?limit=10",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        integration_response = client.get(
+            "/api/v1/integration",
+            headers={"X-Integration-Key": "tiger-secret"},
+        )
+        events = client.get(
+            "/api/v1/local/access-events",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert admin_response.status_code == 200
+    assert integration_response.status_code == 200
+    assert events.status_code == 200
+    assert [event["integration_name"] for event in events.json()] == ["tiger"]
+
+
 def test_integration_key_roles_limit_1c_and_tiger_queues(tmp_path: Path) -> None:
     app = create_app(
         settings=make_settings(tmp_path / "app.db"),

@@ -117,7 +117,6 @@ export type QueueStatus = "pending" | "success" | "error";
 export type ViewMode =
   | "transactions"
   | "webhooks"
-  | "invoices"
   | "queues"
   | "access"
   | "qr-demo"

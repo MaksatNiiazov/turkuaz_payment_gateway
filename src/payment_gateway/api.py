@@ -49,9 +49,11 @@ from payment_gateway.providers.odengi import (
 )
 from payment_gateway.service import (
     InvoiceQRCodeReuseError,
+    PAID_STATUS,
     PaymentService,
     build_one_c_payment_event,
     build_tiger_invoice_event,
+    validate_tiger_invoice_event,
 )
 from payment_gateway.store import PaymentStore
 
@@ -429,7 +431,9 @@ def create_app(
     async def audit_service_client_requests(request: Request, call_next):
         response = await call_next(request)
         integration_name = getattr(request.state, "integration_name", None)
-        if integration_name:
+        # The admin UI uses its own admin auth and must not pollute the
+        # integration access audit with frontend/API requests.
+        if integration_name and integration_name != "admin":
             remote_addr = request.client.host if request.client else None
             storage(request).save_api_access(
                 integration_name=integration_name,
@@ -1294,6 +1298,32 @@ def create_app(
         ),
     )
     async def reset_local_tiger_invoice_event(request: Request, event_id: int) -> dict:
+        current = storage(request).get_tiger_invoice_export(event_id)
+        if current is not None:
+            event_payload = current.get("event_payload")
+            paid_transaction_id = (
+                event_payload.get("paidTransactionId")
+                if isinstance(event_payload, dict)
+                else None
+            )
+            transaction = (
+                storage(request).get_transaction(str(paid_transaction_id))
+                if paid_transaction_id
+                else None
+            )
+            if (
+                current.get("status") != "success"
+                and transaction is not None
+                and transaction.get("status") == PAID_STATUS
+            ):
+                rebuilt_event = build_tiger_invoice_event(transaction)
+                validation_error = validate_tiger_invoice_event(rebuilt_event)
+                return storage(request).upsert_tiger_invoice_export(
+                    rebuilt_event,
+                    status="error" if validation_error else "pending",
+                    error_message=validation_error,
+                )
+
         item = storage(request).reset_tiger_invoice_export(event_id)
         if item is None:
             raise HTTPException(

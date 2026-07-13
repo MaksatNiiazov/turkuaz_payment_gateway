@@ -12,7 +12,6 @@ import {
   clearToken,
   createDemoDynamicQr,
   fetchAccessEvents,
-  fetchInvoiceTransactions,
   fetchOneCPaymentEvents,
   fetchPrintQrCodes,
   fetchTigerInvoiceEvents,
@@ -172,16 +171,6 @@ function savedQrPayload(transaction: TransactionRow | null): string | null {
   return transaction?.payment_token || transaction?.static_qr_link || null;
 }
 
-function invoicePaymentMetrics(rows: TransactionRow[]) {
-  const paid = rows.filter((item) => item.status === "paid").length;
-  const active = rows.filter((item) =>
-    ["inited", "waiting", "qr_scanned"].includes(item.status || ""),
-  ).length;
-  const canceled = rows.filter((item) => item.status === "canceled").length;
-  const invoiceAmount = rows.find((item) => item.status === "paid")?.amount ?? rows[0]?.amount ?? null;
-  return { active, canceled, invoiceAmount, paid };
-}
-
 function invoiceLabel(transaction: TransactionRow): string {
   return (
     transaction.external_invoice_id ||
@@ -198,7 +187,12 @@ type TransactionGroup = {
   hasBusinessKey: boolean;
   invoiceNumber: string | null;
   latestUpdated: string;
-  metrics: ReturnType<typeof invoicePaymentMetrics>;
+  metrics: {
+    active: number;
+    canceled: number;
+    invoiceAmount: number | null;
+    paid: number;
+  };
   paidProvider: string | null;
   providers: string[];
   rows: TransactionRow[];
@@ -220,7 +214,13 @@ function groupTransactionsByPayment(rows: TransactionRow[]): TransactionGroup[] 
   return [...groups.entries()]
     .map(([key, groupRows]) => {
       const hasBusinessKey = key.startsWith("payment:");
-      const metrics = invoicePaymentMetrics(groupRows);
+      const paid = groupRows.filter((item) => item.status === "paid").length;
+      const active = groupRows.filter((item) =>
+        ["inited", "waiting", "qr_scanned"].includes(item.status || ""),
+      ).length;
+      const canceled = groupRows.filter((item) => item.status === "canceled").length;
+      const invoiceAmount = groupRows.find((item) => item.status === "paid")?.amount ?? groupRows[0]?.amount ?? null;
+      const metrics = { active, canceled, invoiceAmount, paid };
       const paidTransaction = groupRows.find((item) => item.status === "paid") ?? null;
       const latestUpdated = groupRows
         .map((item) => item.updated_at)
@@ -251,9 +251,6 @@ function App() {
   const [statusFilter, setStatusFilter] = useState("");
   const [providerFilter, setProviderFilter] = useState("");
   const [transactions, setTransactions] = useState<TransactionRow[]>([]);
-  const [invoiceId, setInvoiceId] = useState("");
-  const [invoicePayments, setInvoicePayments] = useState<TransactionRow[]>([]);
-  const [invoiceState, setInvoiceState] = useState<LoadState>({ loading: false, error: null });
   const [queueStatusFilter, setQueueStatusFilter] = useState<QueueStatus[]>(["pending"]);
   const [tigerQueue, setTigerQueue] = useState<TigerInvoiceExportEvent[]>([]);
   const [oneCQueue, setOneCQueue] = useState<OneCPaymentExportEvent[]>([]);
@@ -292,8 +289,6 @@ function App() {
       { label: "Webhook", value: webhooks.length, icon: "webhook" as const },
     ];
   }, [transactions, webhooks]);
-
-  const invoiceMetrics = useMemo(() => invoicePaymentMetrics(invoicePayments), [invoicePayments]);
 
   const loadData = useCallback(async () => {
     setState({ loading: true, error: null });
@@ -336,27 +331,6 @@ function App() {
     }
   }, []);
 
-  const loadInvoicePayments = useCallback(async () => {
-    const trimmedInvoiceId = invoiceId.trim();
-    if (!trimmedInvoiceId) {
-      setInvoicePayments([]);
-      setInvoiceState({ loading: false, error: "Введите ID счета или документа из 1С." });
-      return;
-    }
-
-    setInvoiceState({ loading: true, error: null });
-    try {
-      const rows = await fetchInvoiceTransactions(trimmedInvoiceId);
-      setInvoicePayments(rows);
-      setInvoiceState({ loading: false, error: null });
-    } catch (error) {
-      setInvoiceState({
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }, [invoiceId]);
-
   const loadQueues = useCallback(async () => {
     setQueueState({ loading: true, error: null });
     try {
@@ -379,14 +353,12 @@ function App() {
     if (!isAuthenticated || isLoginPath) return;
     if (view === "print-settings") {
       void loadPrintSettings();
-    } else if (view === "invoices") {
-      if (invoiceId.trim()) void loadInvoicePayments();
     } else if (view === "queues") {
       void loadQueues();
     } else if (view !== "qr-demo") {
       void loadData();
     }
-  }, [invoiceId, isAuthenticated, isLoginPath, loadData, loadInvoicePayments, loadPrintSettings, loadQueues, view]);
+  }, [isAuthenticated, isLoginPath, loadData, loadPrintSettings, loadQueues, view]);
 
   useEffect(() => {
     let cancelled = false;
@@ -532,43 +504,6 @@ function App() {
     }
   }
 
-  async function handleInvoiceRefresh(transaction: TransactionRow) {
-    if (refreshingId) return;
-    setRefreshingId(transaction.id);
-    setInvoiceState({ loading: false, error: null });
-    try {
-      await refreshTransaction(transaction.id);
-      await loadInvoicePayments();
-    } catch (error) {
-      setInvoiceState({
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setRefreshingId(null);
-    }
-  }
-
-  async function handleInvoiceCancel(transaction: TransactionRow) {
-    if (!canCancelTransaction(transaction) || cancelingId) return;
-    const confirmed = window.confirm(`Отменить оплату ${transaction.id} внутри инвойса?`);
-    if (!confirmed) return;
-
-    setCancelingId(transaction.id);
-    setInvoiceState({ loading: false, error: null });
-    try {
-      await cancelTransaction(transaction.id);
-      await loadInvoicePayments();
-    } catch (error) {
-      setInvoiceState({
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setCancelingId(null);
-    }
-  }
-
   const navItems = [
     {
       key: "transactions",
@@ -583,13 +518,6 @@ function App() {
       icon: "webhook" as const,
       active: view === "webhooks",
       onClick: () => setView("webhooks"),
-    },
-    {
-      key: "invoices",
-      label: "Счета 1С",
-      icon: "file" as const,
-      active: view === "invoices",
-      onClick: () => setView("invoices"),
     },
     {
       key: "queues",
@@ -629,15 +557,11 @@ function App() {
           ? "Доступы"
           : view === "queues"
           ? "Очереди"
-          : view === "invoices"
-          ? "Счет 1С"
           : view === "print-settings"
             ? "QR для 1С"
             : "QR Demo";
   const pageDescription =
-    view === "invoices"
-      ? "Один счет из 1С и все связанные оплаты в МБанк, О!Банк и других QR."
-    : view === "queues"
+    view === "queues"
       ? "Статусы отправки успешных оплат в Tiger и 1С."
     : view === "print-settings"
       ? "Банковские QR-коды для печатной формы 1С."
@@ -689,9 +613,7 @@ function App() {
               ? void loadPrintSettings()
               : view === "queues"
                 ? void loadQueues()
-              : view === "invoices"
-                ? void loadInvoicePayments()
-                : void loadData(),
+              : void loadData(),
         },
       ]}
       environment="local"
@@ -726,19 +648,6 @@ function App() {
             result={qrResult}
             state={qrState}
             onCreate={(payload) => void handleCreateDemoQr(payload)}
-          />
-        ) : view === "invoices" ? (
-          <InvoicePanel
-            cancelingId={cancelingId}
-            invoiceId={invoiceId}
-            metrics={invoiceMetrics}
-            refreshingId={refreshingId}
-            rows={invoicePayments}
-            state={invoiceState}
-            onCancel={(transaction) => void handleInvoiceCancel(transaction)}
-            onInvoiceIdChange={setInvoiceId}
-            onRefresh={() => void loadInvoicePayments()}
-            onRefreshStatus={(transaction) => void handleInvoiceRefresh(transaction)}
           />
         ) : (
           <>
@@ -975,170 +884,6 @@ function AccessTable({ rows }: { rows: AccessEvent[] }) {
         ))}
       </tbody>
     </table>
-  );
-}
-
-function InvoicePanel({
-  invoiceId,
-  rows,
-  metrics,
-  state,
-  cancelingId,
-  refreshingId,
-  onInvoiceIdChange,
-  onRefresh,
-  onRefreshStatus,
-  onCancel,
-}: {
-  invoiceId: string;
-  rows: TransactionRow[];
-  metrics: ReturnType<typeof invoicePaymentMetrics>;
-  state: LoadState;
-  cancelingId: string | null;
-  refreshingId: string | null;
-  onInvoiceIdChange: (value: string) => void;
-  onRefresh: () => void;
-  onRefreshStatus: (transaction: TransactionRow) => void;
-  onCancel: (transaction: TransactionRow) => void;
-}) {
-  const paidTransaction = rows.find((item) => item.status === "paid");
-  const invoiceNumber = rows
-    .map((item) => item.metadata?.invoice_number)
-    .find((value): value is string => Boolean(value));
-
-  return (
-    <section className="invoice-panel">
-      <form
-        className="toolbar invoice-search"
-        onSubmit={(event) => {
-          event.preventDefault();
-          onRefresh();
-        }}
-      >
-        <label>
-          ID счета/документа из 1С
-          <input
-            autoComplete="off"
-            placeholder="550e8400-e29b-41d4-a716-446655440000"
-            value={invoiceId}
-            onChange={(event) => onInvoiceIdChange(event.target.value)}
-          />
-        </label>
-        <button className="refresh" disabled={state.loading} type="submit">
-          <Icon name="search" size={16} />
-          {state.loading ? "Поиск..." : "Показать оплаты"}
-        </button>
-        <div className="toolbar-state">
-          {state.loading ? "Загрузка..." : state.error ? state.error : "Счет готов к проверке"}
-        </div>
-      </form>
-
-      <section className="metrics-grid invoice-metrics">
-        <div className="metric">
-          <Icon name="banknote" size={20} />
-          <span>Оплат</span>
-          <strong>{rows.length}</strong>
-        </div>
-        <div className="metric">
-          <Icon name="shield" size={20} />
-          <span>Paid</span>
-          <strong>{metrics.paid}</strong>
-        </div>
-        <div className="metric">
-          <Icon name="activity" size={20} />
-          <span>Активные</span>
-          <strong>{metrics.active}</strong>
-        </div>
-        <div className="metric">
-          <Icon name="ban" size={20} />
-          <span>Отменены</span>
-          <strong>{metrics.canceled}</strong>
-        </div>
-      </section>
-
-      {rows.length > 0 && (
-        <section className="invoice-summary">
-          <div>
-            <span className="summary-label">Счет 1С</span>
-            <strong className="mono">{invoiceId.trim() || invoiceLabel(rows[0])}</strong>
-          </div>
-          <div>
-            <span className="summary-label">Номер</span>
-            <strong>{invoiceNumber || "-"}</strong>
-          </div>
-          <div>
-            <span className="summary-label">Сумма</span>
-            <strong>{formatAmount(metrics.invoiceAmount)}</strong>
-          </div>
-          <div>
-            <span className="summary-label">Оплачено через</span>
-            <strong>{paidTransaction ? providerLabel(paidTransaction.provider) : "-"}</strong>
-          </div>
-        </section>
-      )}
-
-      <div className="table-panel invoice-table-panel">
-        {rows.length === 0 ? (
-          <EmptyState />
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Provider</th>
-                <th>Payment ID</th>
-                <th>Status</th>
-                <th>Amount</th>
-                <th>QR</th>
-                <th>Updated</th>
-                <th>Действия</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td>{providerLabel(row.provider)}</td>
-                  <td className="mono">{truncate(row.id, 30)}</td>
-                  <td><span className={`status ${statusTone(row.status)}`}>{row.status || "unknown"}</span></td>
-                  <td>{formatAmount(row.amount)}</td>
-                  <td>
-                    <SavedQrPreview
-                      compact
-                      label={row.metadata?.print_qr_code || "QR"}
-                      transaction={row}
-                    />
-                  </td>
-                  <td>{formatDate(row.updated_at)}</td>
-                  <td>
-                    <div className="row-actions">
-                      <button
-                        className="icon-action"
-                        disabled={refreshingId === row.id}
-                        title="Обновить статус"
-                        type="button"
-                        onClick={() => onRefreshStatus(row)}
-                      >
-                        <Icon name="refresh" size={15} />
-                      </button>
-                      {canCancelTransaction(row) && (
-                        <button
-                          className="icon-action danger-icon"
-                          disabled={cancelingId === row.id}
-                          title="Отменить оплату"
-                          type="button"
-                          onClick={() => onCancel(row)}
-                        >
-                          <Icon name="ban" size={15} />
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-    </section>
   );
 }
 

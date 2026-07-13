@@ -68,10 +68,6 @@ export function fetchTransactions(filters: ListFilters): Promise<TransactionRow[
   );
 }
 
-export function fetchInvoiceTransactions(invoiceId: string, limit = 100): Promise<TransactionRow[]> {
-  return fetchTransactions({ limit, invoice_id: invoiceId });
-}
-
 export function fetchWebhooks(limit: number): Promise<WebhookEvent[]> {
   return requestJson<WebhookEvent[]>(
     `/api/v1/local/webhooks?${params({ limit })}`,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from payment_gateway.gateway import PaymentGateway
 from payment_gateway.models import (
@@ -347,14 +347,53 @@ def _paid_payment_fields(transaction: dict) -> dict[str, object]:
 
 def _payment_paid_at(transaction: dict, raw_payload: dict) -> object | None:
     """Always give downstream exports a confirmation time without blocking webhooks."""
-    paid_at = transaction.get("paid_at") or raw_payload.get("paid_at")
-    if paid_at is not None:
-        return paid_at
+    for value in (transaction.get("paid_at"), raw_payload.get("paid_at")):
+        normalized = _normalize_export_datetime(value)
+        if normalized is not None:
+            return normalized
 
     odengi_payload = raw_payload.get("odengi_payload")
     if isinstance(odengi_payload, dict):
-        paid_at = odengi_payload.get("date_pay") or odengi_payload.get("mktime")
-        if paid_at is not None:
-            return str(paid_at)
+        for value in (odengi_payload.get("date_pay"), odengi_payload.get("mktime")):
+            normalized = _normalize_export_datetime(value)
+            if normalized is not None:
+                return normalized
 
-    return transaction.get("updated_at")
+    return _normalize_export_datetime(transaction.get("updated_at"))
+
+
+def _normalize_export_datetime(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
+        timestamp = int(value)
+        if timestamp >= 100_000_000_000:
+            timestamp //= 1000
+        try:
+            return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        parsed = None
+        for format_value in (
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+            "%d.%m.%Y %H:%M:%S",
+        ):
+            try:
+                parsed = datetime.strptime(text, format_value)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=6)))
+    return parsed.isoformat()
