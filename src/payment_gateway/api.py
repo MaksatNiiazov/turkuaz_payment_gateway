@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import hmac
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated
 
 import httpx
@@ -1535,9 +1535,22 @@ def normalize_odengi_webhook(payload: ODengiWebhookPayload) -> WebhookPayload:
         id=transaction_id,
         status=odengi_webhook_status(payload.status_pay),
         amount=payload.amount,
+        paid_at=_odengi_datetime(payload.date_pay or payload.mktime),
         metadata=metadata,
         odengi_payload=payload.model_dump(mode="json", exclude_none=True),
     )
+
+
+def _odengi_datetime(value: str | int | None) -> str | None:
+    """Normalize O!Dengi date text or Unix callback time for the local model."""
+    if value is None:
+        return None
+    if isinstance(value, int) or (isinstance(value, str) and value.strip().isdigit()):
+        return datetime.fromtimestamp(
+            int(value), timezone(timedelta(hours=6))
+        ).isoformat()
+    text = str(value).strip()
+    return text or None
 
 
 def odengi_webhook_status(value: int | str | None) -> str:

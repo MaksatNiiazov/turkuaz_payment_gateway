@@ -2074,6 +2074,7 @@ def test_odengi_webhook_is_public_and_updates_order_id_transaction(tmp_path: Pat
         "order_id": "TIGER-1",
         "amount": 100,
         "currency": "KGS",
+        "date_pay": "2026-07-13 08:30:00",
         "test": 1,
         "fields_other": {"invoice_number": "TIGER-1", "source": "tiger"},
     }
@@ -2093,4 +2094,72 @@ def test_odengi_webhook_is_public_and_updates_order_id_transaction(tmp_path: Pat
     assert local.status_code == 200
     assert local.json()["provider"] == "odengi"
     assert local.json()["status"] == "paid"
+    assert local.json()["paid_at"] == "2026-07-13T08:30:00"
     assert local.json()["metadata"] == {"invoice_number": "TIGER-1", "source": "tiger"}
+
+
+def test_odengi_webhook_uses_callback_time_when_payment_time_is_omitted(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    seed_waiting_transaction(
+        store,
+        "TIGER-2",
+        amount=100,
+        metadata={"invoice_number": "TIGER-2", "source": "tiger"},
+        provider="odengi",
+    )
+    app = create_app(
+        settings=make_multi_provider_settings(db_path),
+        providers=[FakeProvider("mkassa", "MKSA-1"), FakeProvider("odengi", "TIGER-2")],
+        store=store,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/webhooks/odengi",
+            json={
+                "status_pay": 3,
+                "order_id": "TIGER-2",
+                "amount": 100,
+                "mktime": "2026-07-13 08:31:00",
+            },
+        )
+        local = client.get(
+            "/api/v1/local/transactions/TIGER-2",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert response.status_code == 200
+    assert local.status_code == 200
+    assert local.json()["paid_at"] == "2026-07-13T08:31:00"
+
+
+def test_odengi_webhook_normalizes_unix_callback_time(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    seed_waiting_transaction(
+        store,
+        "TIGER-3",
+        amount=100,
+        metadata={"invoice_number": "TIGER-3", "source": "tiger"},
+        provider="odengi",
+    )
+    app = create_app(
+        settings=make_multi_provider_settings(db_path),
+        providers=[FakeProvider("mkassa", "MKSA-1"), FakeProvider("odengi", "TIGER-3")],
+        store=store,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/webhooks/odengi",
+            json={"status_pay": 3, "order_id": "TIGER-3", "amount": 100, "mktime": 1783924260},
+        )
+        local = client.get(
+            "/api/v1/local/transactions/TIGER-3",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert response.status_code == 200
+    assert local.status_code == 200
+    assert local.json()["paid_at"] == "2026-07-13T12:31:00+06:00"
