@@ -2059,7 +2059,13 @@ def test_odengi_webhook_is_public_and_updates_order_id_transaction(tmp_path: Pat
         store,
         "TIGER-1",
         amount=100,
-        metadata={"invoice_number": "TIGER-1", "source": "tiger"},
+        metadata={
+            "invoice_id": "TIGER-1",
+            "invoice_number": "TIGER-1",
+            "source": "tiger",
+            "tiger_bank_account_code": "10200 100.01.001",
+            "client_code": "CLIENT-1",
+        },
         provider="odengi",
     )
     app = create_app(
@@ -2075,7 +2081,13 @@ def test_odengi_webhook_is_public_and_updates_order_id_transaction(tmp_path: Pat
         "amount": 100,
         "currency": "KGS",
         "test": 1,
-        "fields_other": {"invoice_number": "TIGER-1", "source": "tiger"},
+        "fields_other": {
+            "invoice_id": "TIGER-1",
+            "invoice_number": "TIGER-1",
+            "source": "tiger",
+            "tiger_bank_account_code": "10200 100.01.001",
+            "client_code": "CLIENT-1",
+        },
     }
 
     with TestClient(app) as client:
@@ -2093,4 +2105,14 @@ def test_odengi_webhook_is_public_and_updates_order_id_transaction(tmp_path: Pat
     assert local.status_code == 200
     assert local.json()["provider"] == "odengi"
     assert local.json()["status"] == "paid"
-    assert local.json()["metadata"] == {"invoice_number": "TIGER-1", "source": "tiger"}
+    assert local.json()["metadata"] == {
+        "invoice_id": "TIGER-1",
+        "invoice_number": "TIGER-1",
+        "source": "tiger",
+        "tiger_bank_account_code": "10200 100.01.001",
+        "client_code": "CLIENT-1",
+    }
+    tiger_exports = store.list_tiger_invoice_exports(statuses={"pending", "error"})
+    assert len(tiger_exports) == 1
+    assert tiger_exports[0]["status"] == "pending"
+    assert tiger_exports[0]["event_payload"]["paidAt"]

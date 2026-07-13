@@ -335,7 +335,7 @@ def _paid_payment_fields(transaction: dict) -> dict[str, object]:
         "paymentCode": payment_code,
         "paidProvider": provider,
         "providerPaymentId": str(provider_payment_id),
-        "paidAt": transaction.get("paid_at") or raw_payload.get("paid_at"),
+        "paidAt": _payment_paid_at(transaction, raw_payload),
         "amountTyiyn": amount_tyiyn,
         "amount": amount,
         "currency": metadata.get("currency") or raw_payload.get("currency") or "KGS",
@@ -343,3 +343,18 @@ def _paid_payment_fields(transaction: dict) -> dict[str, object]:
         "clientName": metadata.get("client_name") or metadata.get("payer_full_name"),
         "paymentMethod": transaction.get("transaction_type") or "qr",
     }
+
+
+def _payment_paid_at(transaction: dict, raw_payload: dict) -> object | None:
+    """Always give downstream exports a confirmation time without blocking webhooks."""
+    paid_at = transaction.get("paid_at") or raw_payload.get("paid_at")
+    if paid_at is not None:
+        return paid_at
+
+    odengi_payload = raw_payload.get("odengi_payload")
+    if isinstance(odengi_payload, dict):
+        paid_at = odengi_payload.get("date_pay") or odengi_payload.get("mktime")
+        if paid_at is not None:
+            return str(paid_at)
+
+    return transaction.get("updated_at")
