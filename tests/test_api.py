@@ -1717,7 +1717,7 @@ def test_one_c_can_pull_acknowledge_and_retry_paid_payment(tmp_path: Path) -> No
     assert reset.json()["attempt_count"] == 2
 
 
-def test_one_c_keeps_each_paid_transaction_while_tiger_keeps_one_invoice(tmp_path: Path) -> None:
+def test_one_c_and_tiger_keep_only_one_paid_transaction_per_invoice(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     store = SQLitePaymentStore(db_path)
     invoice_id = "550e8400-e29b-41d4-a716-446655440000"
@@ -1765,10 +1765,7 @@ def test_one_c_keeps_each_paid_transaction_while_tiger_keeps_one_invoice(tmp_pat
             headers={"X-Integration-Key": "tiger-secret"},
         )
 
-    assert {item["payment_id"] for item in one_c_pending.json()} == {
-        "PAID-BANK-A",
-        "PAID-BANK-B",
-    }
+    assert {item["payment_id"] for item in one_c_pending.json()} == {"PAID-BANK-A"}
     assert len(tiger_pending.json()) == 1
     assert tiger_pending.json()[0]["invoice_id"] == invoice_id
     assert tiger_pending.json()[0]["paid_transaction_id"] == "PAID-BANK-A"

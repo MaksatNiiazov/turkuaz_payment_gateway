@@ -221,3 +221,47 @@ async def test_payment_service_auto_cancels_other_invoice_qr_after_paid_webhook(
     assert store.get_transaction("OBANK-1")["status"] == "canceled"
     assert odengi.canceled_transaction_ids == ["987654321"]
     assert mkassa.canceled_transaction_ids == []
+
+
+@pytest.mark.asyncio
+async def test_payment_service_does_not_export_second_paid_invoice_qr(tmp_path) -> None:
+    store = SQLitePaymentStore(tmp_path / "app.db")
+    store.initialize()
+    provider = FakeProvider("mkassa", "QR-2")
+    service = PaymentService(
+        gateway=PaymentGateway([provider], default_provider="mkassa"),
+        store=store,
+    )
+    invoice_id = "550e8400-e29b-41d4-a716-446655440000"
+    store.upsert_transaction(
+        transaction_id="QR-1",
+        status="paid",
+        transaction_type="qr",
+        amount=100,
+        external_invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id, "print_qr_code": "mbank"},
+        provider="mkassa",
+    )
+    store.upsert_transaction(
+        transaction_id="QR-2",
+        status="waiting",
+        transaction_type="qr",
+        amount=100,
+        external_invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id, "print_qr_code": "obank"},
+        provider="mkassa",
+    )
+
+    await service.save_webhook(
+        WebhookPayload(
+            id="QR-2",
+            status="paid",
+            amount=100,
+            metadata={"invoice_id": invoice_id, "print_qr_code": "obank"},
+        ),
+        provider_name="mkassa",
+    )
+
+    assert store.get_transaction("QR-2")["status"] == "duplicate"
+    assert store.list_one_c_payment_exports(limit=10) == []
+    assert store.list_tiger_invoice_exports(limit=10) == []
