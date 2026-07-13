@@ -30,6 +30,12 @@ app.MapGet("/tiger/clients/sample", (LogoObjectsClient logo) =>
     return result.Success ? Results.Ok(result) : Results.Problem(result.Error);
 }).RequireIntegrationKey();
 
+app.MapGet("/tiger/debug/vouchers/{ficheNo}", (string ficheNo, LogoObjectsClient logo) =>
+{
+    var result = logo.InspectVouchers(ficheNo);
+    return result.Success ? Results.Ok(result) : Results.Problem(result.Error);
+}).RequireIntegrationKey();
+
 app.MapPost("/api/invoices/paid", (InvoicePaidEvent invoice, LogoObjectsClient logo) =>
 {
     var result = logo.ProcessInvoicePaid(invoice);

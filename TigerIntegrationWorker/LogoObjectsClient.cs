@@ -112,6 +112,91 @@ public sealed class LogoObjectsClient
         }
     }
 
+    public VoucherInspectResult InspectVouchers(string ficheNo)
+    {
+        lock (_comLock)
+        {
+            dynamic? logo = null;
+            dynamic? query = null;
+            try
+            {
+                var normalizedFicheNo = ficheNo.Trim();
+                if (string.IsNullOrWhiteSpace(normalizedFicheNo))
+                    return new VoucherInspectResult(false, ficheNo, [], "FicheNo is required.");
+
+                logo = CreateUnityApplication();
+                ConnectAndLogin(logo);
+                query = logo.NewQuery();
+                query.Statement = $"""
+SELECT
+    H.LOGICALREF AS FICHE_REF,
+    H.FICHENO,
+    H.DEBITTOT,
+    H.GENEXP1,
+    L.LOGICALREF AS LINE_REF,
+    L.AMOUNT,
+    L.LINEEXP
+FROM LG_{_options.FirmNo:000}_{_options.PeriodNo:00}_BNFICHE AS H
+LEFT JOIN LG_{_options.FirmNo:000}_{_options.PeriodNo:00}_BNFLINE AS L
+    ON L.SOURCEFREF = H.LOGICALREF AND L.CANCELLED = 0
+WHERE H.CANCELLED = 0 AND H.FICHENO = '{EscapeSqlLiteral(normalizedFicheNo)}'
+ORDER BY H.LOGICALREF, L.LOGICALREF
+""";
+                if (!(bool)query.OpenDirect())
+                    return new VoucherInspectResult(false, normalizedFicheNo, [], "Query OpenDirect returned false.");
+
+                var snapshots = new Dictionary<int, MutableVoucherDebugSnapshot>();
+                var hasRow = (bool)query.First();
+                while (hasRow)
+                {
+                    var logicalRef = Convert.ToInt32(query.FieldByName("FICHE_REF").Value, CultureInfo.InvariantCulture);
+                    if (!snapshots.TryGetValue(logicalRef, out MutableVoucherDebugSnapshot? snapshot))
+                    {
+                        snapshot = new MutableVoucherDebugSnapshot(
+                            logicalRef,
+                            Convert.ToString(query.FieldByName("FICHENO").Value, CultureInfo.InvariantCulture) ?? string.Empty,
+                            Convert.ToDecimal(query.FieldByName("DEBITTOT").Value, CultureInfo.InvariantCulture),
+                            Convert.ToString(query.FieldByName("GENEXP1").Value, CultureInfo.InvariantCulture) ?? string.Empty);
+                        snapshots.Add(logicalRef, snapshot);
+                    }
+
+                    var lineRef = query.FieldByName("LINE_REF").Value;
+                    if (lineRef is not null && lineRef is not DBNull)
+                    {
+                        snapshot.LineCount++;
+                        snapshot.LineAmountSum += Convert.ToDecimal(query.FieldByName("AMOUNT").Value, CultureInfo.InvariantCulture);
+                        snapshot.LineMarkers.Add(
+                            Convert.ToString(query.FieldByName("LINEEXP").Value, CultureInfo.InvariantCulture) ?? string.Empty);
+                    }
+
+                    hasRow = (bool)query.Next();
+                }
+
+                var result = snapshots.Values
+                    .Select(snapshot => new VoucherDebugSnapshot(
+                        snapshot.LogicalRef,
+                        snapshot.FicheNo,
+                        snapshot.HeaderDebit,
+                        snapshot.GroupMarker,
+                        snapshot.LineCount,
+                        snapshot.LineAmountSum,
+                        snapshot.LineMarkers))
+                    .ToList();
+                return new VoucherInspectResult(true, normalizedFicheNo, result, null);
+            }
+            catch (Exception ex)
+            {
+                return new VoucherInspectResult(false, ficheNo, [], ex.Message);
+            }
+            finally
+            {
+                try { query?.Close(); } catch { }
+                Release(query);
+                LogoutAndRelease(logo);
+            }
+        }
+    }
+
     public InvoiceProcessResult ProcessInvoicePaid(InvoicePaidEvent invoice)
     {
         var validationError = ValidateInvoice(invoice);

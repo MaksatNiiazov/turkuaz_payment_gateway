@@ -153,6 +153,18 @@ Read sample clients:
 curl -H "X-Integration-Key: use-a-long-random-secret" http://127.0.0.1:5088/tiger/clients/sample
 ```
 
+Read one bank voucher without writing to Tiger:
+
+```powershell
+$headers = @{ "X-Integration-Key" = "use-a-long-random-secret" }
+Invoke-RestMethod `
+    -Uri "http://127.0.0.1:5088/tiger/debug/vouchers/00000046" `
+    -Headers $headers | ConvertTo-Json -Depth 10
+```
+
+The response shows the voucher logical reference, group marker, line count,
+line amount sum, and all payment markers. It is read-only.
+
 ## First C# Dry-Run In 923/1
 
 Use this test configuration before enabling polling:

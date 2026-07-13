@@ -78,6 +78,12 @@ public sealed record TigerClientsResult(bool Success, IReadOnlyList<TigerClientR
 
 public sealed record TigerClientRow(int LogicalRef, string Code, string Name);
 
+public sealed record VoucherInspectResult(
+    bool Success,
+    string FicheNo,
+    IReadOnlyList<VoucherDebugSnapshot> Vouchers,
+    string? Error);
+
 public sealed record InvoicePaidEvent(
     string InvoiceId,
     string? InvoiceNumber,
