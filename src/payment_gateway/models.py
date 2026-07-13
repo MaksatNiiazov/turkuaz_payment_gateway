@@ -566,10 +566,6 @@ class ODengiWebhookPayload(APIModel):
     order_id: str | None = Field(default=None, description="Merchant order ID.")
     amount: int | None = Field(default=None, description="Amount in tyiyn.")
     currency: str | None = Field(default=None, description="Payment currency.")
-    date_pay: str | int | None = Field(
-        default=None,
-        description="O!Dengi payment completion datetime, when provided by the callback.",
-    )
     mktime: str | int | None = Field(default=None, description="Provider callback timestamp.")
     test: int | str | None = Field(default=None, description="1=test, 0=production.")
     fields_other: Any = Field(default=None, description="Merchant metadata echoed by O!Dengi.")

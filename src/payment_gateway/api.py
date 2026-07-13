@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import hmac
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 from typing import Annotated
 
 import httpx
@@ -1535,40 +1535,9 @@ def normalize_odengi_webhook(payload: ODengiWebhookPayload) -> WebhookPayload:
         id=transaction_id,
         status=odengi_webhook_status(payload.status_pay),
         amount=payload.amount,
-        paid_at=_odengi_datetime(payload.date_pay or payload.mktime),
         metadata=metadata,
         odengi_payload=payload.model_dump(mode="json", exclude_none=True),
     )
-
-
-def _odengi_datetime(value: str | int | None) -> str | None:
-    """Normalize O!Dengi date text or Unix callback time for the local model."""
-    if value is None:
-        return None
-    if isinstance(value, int) or (isinstance(value, str) and value.strip().isdigit()):
-        timestamp = int(value)
-        if timestamp >= 100_000_000_000:
-            timestamp //= 1000
-        try:
-            return datetime.fromtimestamp(timestamp, timezone(timedelta(hours=6))).isoformat()
-        except (OverflowError, OSError, ValueError):
-            return None
-    text = str(value).strip()
-    if not text:
-        return None
-
-    normalized = text.replace("Z", "+00:00")
-    try:
-        return datetime.fromisoformat(normalized).isoformat()
-    except ValueError:
-        pass
-
-    for format_value in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y %H:%M:%S"):
-        try:
-            return datetime.strptime(text, format_value).isoformat()
-        except ValueError:
-            continue
-    return None
 
 
 def odengi_webhook_status(value: int | str | None) -> str:
