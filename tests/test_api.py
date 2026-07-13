@@ -2163,3 +2163,40 @@ def test_odengi_webhook_normalizes_unix_callback_time(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert local.status_code == 200
     assert local.json()["paid_at"] == "2026-07-13T12:31:00+06:00"
+
+
+def test_odengi_webhook_does_not_reject_paid_status_for_unknown_date_format(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    store = SQLitePaymentStore(db_path)
+    seed_waiting_transaction(
+        store,
+        "TIGER-4",
+        amount=100,
+        metadata={"invoice_number": "TIGER-4", "source": "tiger"},
+        provider="odengi",
+    )
+    app = create_app(
+        settings=make_multi_provider_settings(db_path),
+        providers=[FakeProvider("mkassa", "MKSA-1"), FakeProvider("odengi", "TIGER-4")],
+        store=store,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/webhooks/odengi",
+            json={
+                "status_pay": 3,
+                "order_id": "TIGER-4",
+                "amount": 100,
+                "date_pay": "13/07/2026 08:31:00",
+            },
+        )
+        local = client.get(
+            "/api/v1/local/transactions/TIGER-4",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+
+    assert response.status_code == 200
+    assert local.status_code == 200
+    assert local.json()["status"] == "paid"
+    assert local.json()["paid_at"] is None

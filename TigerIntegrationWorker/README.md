@@ -108,6 +108,25 @@ From this folder on the Tiger server:
 dotnet run
 ```
 
+For a simple startup, double-click `Start-TigerWorker.cmd`. It checks that
+`appsettings.json` and the .NET SDK are available, builds the Release version,
+and starts the worker using the configured `Urls` value. The console window
+must remain open while the worker is running.
+
+From PowerShell, the same launch is:
+
+```powershell
+.\Start-TigerWorker.ps1
+```
+
+After a successful build, use `-SkipBuild` for a faster restart:
+
+```powershell
+.\Start-TigerWorker.ps1 -SkipBuild
+```
+
+To stop the worker, press `Ctrl+C` in its console window.
+
 ## Test Locally On The Tiger Server
 
 Health:

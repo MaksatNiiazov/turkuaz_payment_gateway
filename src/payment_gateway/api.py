@@ -1546,11 +1546,29 @@ def _odengi_datetime(value: str | int | None) -> str | None:
     if value is None:
         return None
     if isinstance(value, int) or (isinstance(value, str) and value.strip().isdigit()):
-        return datetime.fromtimestamp(
-            int(value), timezone(timedelta(hours=6))
-        ).isoformat()
+        timestamp = int(value)
+        if timestamp >= 100_000_000_000:
+            timestamp //= 1000
+        try:
+            return datetime.fromtimestamp(timestamp, timezone(timedelta(hours=6))).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
     text = str(value).strip()
-    return text or None
+    if not text:
+        return None
+
+    normalized = text.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized).isoformat()
+    except ValueError:
+        pass
+
+    for format_value in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y %H:%M:%S"):
+        try:
+            return datetime.strptime(text, format_value).isoformat()
+        except ValueError:
+            continue
+    return None
 
 
 def odengi_webhook_status(value: int | str | None) -> str:
