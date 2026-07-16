@@ -82,7 +82,7 @@ public sealed class PaymentGatewayPoller : BackgroundService
                 foreach (var item in events)
                 {
                     if (item.EventPayload is null ||
-                        !string.Equals(item.Status, "pending", StringComparison.OrdinalIgnoreCase))
+                        !string.Equals(item.Status, "processing", StringComparison.OrdinalIgnoreCase))
                         continue;
 
                     var result = _logo.ProcessInvoicePaid(item.EventPayload);

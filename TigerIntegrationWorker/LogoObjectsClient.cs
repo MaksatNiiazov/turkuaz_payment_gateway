@@ -792,7 +792,10 @@ ORDER BY H.LOGICALREF, L.LOGICALREF
         if (string.IsNullOrWhiteSpace(invoice.InvoiceId)) return "invoiceId is required.";
         if (string.IsNullOrWhiteSpace(invoice.PaidTransactionId)) return "paidTransactionId is required.";
         if (invoice.PaidAt == default) return "paidAt is required.";
+        if (invoice.AmountTyiyn <= 0) return "amountTyiyn must be greater than zero.";
         if (invoice.Amount <= 0) return "amount must be greater than zero.";
+        if (invoice.Amount != invoice.AmountTyiyn / 100m)
+            return "amount must equal amountTyiyn / 100.";
         if (!string.Equals(invoice.Currency, "KGS", StringComparison.OrdinalIgnoreCase))
             return "Only KGS bank vouchers are currently supported.";
         if (string.IsNullOrWhiteSpace(invoice.ClientCode)) return "clientCode is required.";

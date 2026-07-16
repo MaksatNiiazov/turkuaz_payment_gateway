@@ -174,8 +174,29 @@ export function savePrintQrCodes(items: PrintQrCodeConfigItem[]): Promise<PrintQ
   });
 }
 
-export function qrImageUrl(data: string): string {
-  return `${API_BASE_URL}/api/v1/admin/qr/render?data=${encodeURIComponent(data)}`;
+export async function fetchQrImage(data: string): Promise<Blob> {
+  const token = getToken();
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/admin/qr/render?data=${encodeURIComponent(data)}`,
+    {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    },
+  );
+  if (!response.ok) {
+    if (response.status === 401) {
+      clearToken();
+      if (window.location.pathname !== "/login") {
+        window.location.href = "/login";
+      }
+    }
+    const errorPayload = await response.json().catch(() => null);
+    throw new Error(
+      errorPayload?.detail || errorPayload?.message || `HTTP ${response.status}`,
+    );
+  }
+  return response.blob();
 }
 
 export function getToken(): string | null {

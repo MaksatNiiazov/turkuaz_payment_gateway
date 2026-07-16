@@ -5,8 +5,6 @@ services:
       - .env
     environment:
       DATABASE_URL: sqlite:////app/data/payment_gateway.db
-      PAYMENT_ADMIN_API_KEY: ${PAYMENT_ADMIN_API_KEY:-admin-dev-key}
-      IDENTITY_API_URL: http://host.docker.internal:8500/api/v1
     volumes:
       - payment_gateway_data:/app/data
     ports:
@@ -30,7 +28,6 @@ services:
     environment:
       VITE_API_PROXY_TARGET: http://payment-gateway:8502
       VITE_IDENTITY_PROXY_TARGET: http://host.docker.internal:8500
-      PAYMENT_ADMIN_API_KEY: ${PAYMENT_ADMIN_API_KEY:-admin-dev-key}
     ports:
       - "7502:7502"
     depends_on:

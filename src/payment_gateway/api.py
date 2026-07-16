@@ -3,10 +3,10 @@ from __future__ import annotations
 import io
 import hmac
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Annotated
 
-import httpx
+import jwt
 import qrcode
 from fastapi import APIRouter, Body, Depends, FastAPI, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -74,6 +74,8 @@ class OneCPaymentExportResult(APIModel):
 QUEUE_STATUSES = {"pending", "success", "error", "processing", "skipped"}
 ONE_C_INTEGRATION_NAMES = {"1c"}
 TIGER_INTEGRATION_NAMES = {"tiger"}
+ADMIN_PERMISSION = "payments.transactions.read"
+ADMIN_WRITE_PERMISSION = "payments.qr.create"
 
 
 integration_key_scheme = APIKeyHeader(
@@ -509,7 +511,14 @@ def create_app(
         summary="Service readiness check",
         description="Standard Turkuaz service readiness endpoint.",
     )
-    async def service_ready() -> dict[str, str]:
+    async def service_ready(request: Request) -> dict[str, str]:
+        try:
+            storage(request).ping()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database is unavailable",
+            ) from exc
         return {"status": "ready"}
 
     protected_router = APIRouter(
@@ -951,18 +960,18 @@ def create_app(
         summary="List pending Tiger invoice export events",
         dependencies=[Depends(require_integration_name(*TIGER_INTEGRATION_NAMES))],
         description=(
-            "Used by the Tiger worker. Returns invoice-level events for invoices that "
-            "are paid and currently queued for Tiger export. Error events stay out of "
-            "this list until an admin resets them."
+            "Used by the Tiger worker. Atomically claims paid-invoice events by moving "
+            "them from pending to processing. Expired processing leases are retried. "
+            "Error events stay out of this list until an admin resets them."
         ),
     )
     async def tiger_pending_invoice_events(
         request: Request,
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
     ) -> list[dict]:
-        return storage(request).list_tiger_invoice_exports(
+        return storage(request).claim_tiger_invoice_exports(
             limit=limit,
-            statuses={"pending"},
+            lease_seconds=settings_from_request(request).export_queue_lease_seconds,
         )
 
     @protected_router.post(
@@ -985,6 +994,12 @@ def create_app(
             error_message=payload.error_message,
         )
         if item is None:
+            current = storage(request).get_tiger_invoice_export(event_id)
+            if current is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Tiger event cannot transition from {current['status']}",
+                )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Tiger invoice export event not found",
@@ -997,18 +1012,18 @@ def create_app(
         summary="List pending 1C payment events",
         dependencies=[Depends(require_integration_name(*ONE_C_INTEGRATION_NAMES))],
         description=(
-            "Used by the 1C scheduled job or manual sync command. Returns successful "
-            "payments currently queued for 1C. Error events stay out of this list "
-            "until an admin resets them."
+            "Used by the 1C scheduled job or manual sync command. Atomically claims "
+            "successful payments by moving them from pending to processing. Expired "
+            "processing leases are retried. Error events require an admin reset."
         ),
     )
     async def one_c_pending_payment_events(
         request: Request,
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
     ) -> list[dict]:
-        return storage(request).list_one_c_payment_exports(
+        return storage(request).claim_one_c_payment_exports(
             limit=limit,
-            statuses={"pending"},
+            lease_seconds=settings_from_request(request).export_queue_lease_seconds,
         )
 
     @protected_router.post(
@@ -1030,6 +1045,12 @@ def create_app(
             error_message=payload.error_message,
         )
         if item is None:
+            current = storage(request).get_one_c_payment_export(event_id)
+            if current is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"1C event cannot transition from {current['status']}",
+                )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="1C payment export event not found",
@@ -1187,6 +1208,7 @@ def create_app(
         tags=["local"],
         summary="Replace print QR configuration",
         description="Admin-only replacement for QR labels, order, providers, and enabled flags.",
+        dependencies=[Depends(require_admin_write_permission)],
     )
     async def replace_print_qr_codes(
         request: Request,
@@ -1296,6 +1318,7 @@ def create_app(
             "Admin-only reset. Moves a Tiger export event back to pending so the "
             "worker can retry it."
         ),
+        dependencies=[Depends(require_admin_write_permission)],
     )
     async def reset_local_tiger_invoice_event(request: Request, event_id: int) -> dict:
         current = storage(request).get_tiger_invoice_export(event_id)
@@ -1318,14 +1341,22 @@ def create_app(
             ):
                 rebuilt_event = build_tiger_invoice_event(transaction)
                 validation_error = validate_tiger_invoice_event(rebuilt_event)
-                return storage(request).upsert_tiger_invoice_export(
+                rebuilt = storage(request).upsert_tiger_invoice_export(
                     rebuilt_event,
                     status="error" if validation_error else "pending",
                     error_message=validation_error,
                 )
+                if validation_error:
+                    return rebuilt
 
         item = storage(request).reset_tiger_invoice_export(event_id)
         if item is None:
+            current = storage(request).get_tiger_invoice_export(event_id)
+            if current is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Tiger event cannot be reset from {current['status']}",
+                )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Tiger invoice export event not found",
@@ -1354,10 +1385,17 @@ def create_app(
         tags=["local"],
         summary="Reset 1C payment export event",
         description="Admin-only reset to pending so 1C can import the payment again.",
+        dependencies=[Depends(require_admin_write_permission)],
     )
     async def reset_local_one_c_payment_event(request: Request, event_id: int) -> dict:
         item = storage(request).reset_one_c_payment_export(event_id)
         if item is None:
+            current = storage(request).get_one_c_payment_export(event_id)
+            if current is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"1C event cannot be reset from {current['status']}",
+                )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="1C payment export event not found",
@@ -1370,6 +1408,7 @@ def create_app(
         tags=["local"],
         summary="Refresh local transaction status",
         description="Reads the current transaction state from MKassa and saves it locally.",
+        dependencies=[Depends(require_admin_write_permission)],
     )
     async def refresh_local_transaction(request: Request, transaction_id: str) -> Transaction:
         if storage(request).get_transaction(transaction_id) is None:
@@ -1385,6 +1424,7 @@ def create_app(
             "Admin-only wrapper around MKassa dynamic QR cancellation. "
             "Use for unpaid dynamic QR transactions shown in the admin UI."
         ),
+        dependencies=[Depends(require_admin_write_permission)],
     )
     async def cancel_local_transaction(request: Request, transaction_id: str) -> CancelResponse:
         item = storage(request).get_transaction(transaction_id)
@@ -1409,6 +1449,7 @@ def create_app(
         tags=["local"],
         summary="Create dynamic QR from admin web UI",
         description="Admin-only QR demo endpoint used by the React admin interface.",
+        dependencies=[Depends(require_admin_write_permission)],
     )
     async def create_admin_dynamic_qr(
         request: Request,
@@ -1561,10 +1602,16 @@ def normalize_odengi_webhook(payload: ODengiWebhookPayload) -> WebhookPayload:
         )
 
     metadata = payload.fields_other if isinstance(payload.fields_other, dict) else {}
+    webhook_status = odengi_webhook_status(payload.status_pay)
     return WebhookPayload(
         id=transaction_id,
-        status=odengi_webhook_status(payload.status_pay),
+        status=webhook_status,
         amount=payload.amount,
+        paid_at=(
+            normalize_odengi_webhook_datetime(payload.mktime)
+            if webhook_status == PAID_STATUS
+            else None
+        ),
         metadata=metadata,
         odengi_payload=payload.model_dump(mode="json", exclude_none=True),
     )
@@ -1579,6 +1626,27 @@ def odengi_webhook_status(value: int | str | None) -> str:
     if normalized in {"1", "processing"}:
         return "waiting"
     return "unknown"
+
+
+def normalize_odengi_webhook_datetime(value: str | int | None) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        timestamp = int(text)
+        if timestamp >= 100_000_000_000:
+            timestamp //= 1000
+        try:
+            return datetime.fromtimestamp(timestamp, timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def build_form_metadata(
@@ -1715,50 +1783,89 @@ async def require_admin_key(
 ) -> None:
     settings = settings_from_request(request)
     configured = settings.payment_admin_api_key
-    if configured is None or not configured.get_secret_value().strip():
-        if credentials is not None:
-            await verify_identity_admin_token(settings, credentials.credentials)
-            request.state.integration_name = "admin"
-            return
+    if configured is not None and x_admin_key and hmac.compare_digest(
+        x_admin_key,
+        configured.get_secret_value().strip(),
+    ):
         request.state.integration_name = "admin"
-        return
-    expected = configured.get_secret_value().strip()
-    if x_admin_key and hmac.compare_digest(x_admin_key, expected):
-        request.state.integration_name = "admin"
+        request.state.admin_auth = "key"
         return
     if credentials is not None:
-        await verify_identity_admin_token(settings, credentials.credentials)
+        claims = await verify_identity_admin_token(settings, credentials.credentials)
         request.state.integration_name = "admin"
+        request.state.admin_auth = "identity"
+        request.state.identity_claims = claims
         return
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
 
 
-async def verify_identity_admin_token(settings: Settings, token: str) -> None:
-    if not settings.identity_api_url:
+async def verify_identity_admin_token(settings: Settings, token: str) -> dict[str, object]:
+    if settings.identity_secret_key is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Identity API is not configured",
+            detail="Identity JWT verification is not configured",
         )
-    auth_me_url = f"{settings.identity_api_url.rstrip('/')}/auth/me"
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(
-                auth_me_url,
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            )
-    except httpx.RequestError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Identity service is unavailable",
-        ) from exc
-
-    if response.status_code in {status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN}:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token")
-    if response.status_code >= 400:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Identity service rejected admin token validation",
+        claims = jwt.decode(
+            token,
+            settings.identity_secret_key.get_secret_value(),
+            algorithms=[settings.identity_algorithm],
+            options={"require": ["exp", "sub"]},
         )
+    except jwt.PyJWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin token",
+        ) from exc
+    if not isinstance(claims.get("sub"), str) or not claims["sub"].strip():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token")
+    if not identity_claims_have_permission(claims, ADMIN_PERMISSION):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Missing permission: {ADMIN_PERMISSION}",
+        )
+    return claims
+
+
+async def require_admin_write_permission(request: Request) -> None:
+    if getattr(request.state, "admin_auth", None) == "key":
+        return
+    claims = getattr(request.state, "identity_claims", None)
+    if isinstance(claims, dict) and identity_claims_have_permission(
+        claims,
+        ADMIN_WRITE_PERMISSION,
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"Missing permission: {ADMIN_WRITE_PERMISSION}",
+    )
+
+
+def identity_claims_have_permission(claims: dict[str, object], permission: str) -> bool:
+    permissions = claims.get("permissions")
+    if isinstance(permissions, list) and permission in permissions:
+        return True
+
+    branch = claims.get("branch")
+    branch_id = claims.get("active_branch_id") or claims.get("branch_id")
+    branch_code = claims.get("branch_code")
+    if isinstance(branch, dict):
+        branch_id = branch.get("id") or branch_id
+        branch_code = branch.get("code") or branch_code
+
+    branch_permissions_by_id = claims.get("branch_permissions_by_id")
+    if isinstance(branch_permissions_by_id, dict) and branch_id is not None:
+        values = branch_permissions_by_id.get(str(branch_id))
+        if isinstance(values, list) and permission in values:
+            return True
+
+    branch_permissions = claims.get("branch_permissions")
+    if isinstance(branch_permissions, dict) and isinstance(branch_code, str):
+        values = branch_permissions.get(branch_code)
+        if isinstance(values, list) and permission in values:
+            return True
+    return False
 
 
 async def mkassa_api_error_handler(_: Request, exc: MKassaAPIError):

@@ -47,12 +47,16 @@ class Settings(BaseSettings):
     )
     integration_keys: SecretStr | None = Field(None, alias="INTEGRATION_KEYS")
     payment_admin_api_key: SecretStr | None = Field(None, alias="PAYMENT_ADMIN_API_KEY")
-    identity_api_url: str | None = Field(
-        "http://127.0.0.1:8500/api/v1",
-        alias="IDENTITY_API_URL",
-    )
+    identity_secret_key: SecretStr | None = Field(None, alias="IDENTITY_SECRET_KEY")
+    identity_algorithm: str = Field("HS256", alias="IDENTITY_ALGORITHM")
     database_url: str = Field("sqlite:///./data/payment_gateway.db", alias="DATABASE_URL")
     auto_create_schema: bool = Field(True, alias="AUTO_CREATE_SCHEMA")
+    export_queue_lease_seconds: int = Field(
+        300,
+        alias="EXPORT_QUEUE_LEASE_SECONDS",
+        ge=30,
+        le=3600,
+    )
     request_timeout_connect: float = Field(5.0, alias="REQUEST_TIMEOUT_CONNECT", gt=0)
     request_timeout_read: float = Field(20.0, alias="REQUEST_TIMEOUT_READ", gt=0)
     request_timeout_write: float = Field(10.0, alias="REQUEST_TIMEOUT_WRITE", gt=0)
@@ -80,7 +84,7 @@ class Settings(BaseSettings):
             raise ValueError("MKASSA_API_KEY must not be empty")
         return value
 
-    @field_validator("odengi_base_url", "odengi_result_url", "identity_api_url")
+    @field_validator("odengi_base_url", "odengi_result_url")
     @classmethod
     def normalize_optional_url(cls, value: str | None) -> str | None:
         if value is None:
@@ -88,7 +92,7 @@ class Settings(BaseSettings):
         normalized = value.strip()
         if not normalized:
             return None
-        return normalized.rstrip("/") if value != normalized else normalized
+        return normalized.rstrip("/")
 
     @field_validator("odengi_sid")
     @classmethod
@@ -104,6 +108,24 @@ class Settings(BaseSettings):
         if value is not None and not value.get_secret_value().strip():
             raise ValueError("ODENGI_PASSWORD must not be empty")
         return value
+
+    @field_validator(
+        "payment_admin_api_key",
+        "identity_secret_key",
+    )
+    @classmethod
+    def normalize_optional_secret(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None or not value.get_secret_value().strip():
+            return None
+        return value
+
+    @field_validator("identity_algorithm")
+    @classmethod
+    def validate_identity_algorithm(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized != "HS256":
+            raise ValueError("IDENTITY_ALGORITHM must be HS256")
+        return normalized
 
     @field_validator("odengi_lang")
     @classmethod

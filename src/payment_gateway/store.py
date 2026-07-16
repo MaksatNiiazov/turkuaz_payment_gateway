@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +19,11 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    and_,
     create_engine,
     desc,
+    inspect,
+    or_,
     select,
 )
 from sqlalchemy.exc import IntegrityError
@@ -188,6 +191,21 @@ one_c_payment_exports = Table(
 Index("idx_transactions_provider_status", transactions.c.provider, transactions.c.status)
 Index("idx_transactions_external_invoice_id", transactions.c.external_invoice_id)
 Index("idx_transactions_updated_at", transactions.c.updated_at)
+Index(
+    "uq_transactions_paid_invoice",
+    transactions.c.external_invoice_id,
+    unique=True,
+    sqlite_where=and_(
+        transactions.c.status == "paid",
+        transactions.c.external_invoice_id.is_not(None),
+        transactions.c.external_invoice_id != "",
+    ),
+    postgresql_where=and_(
+        transactions.c.status == "paid",
+        transactions.c.external_invoice_id.is_not(None),
+        transactions.c.external_invoice_id != "",
+    ),
+)
 Index("idx_webhook_events_transaction_id", webhook_events.c.transaction_id)
 Index("idx_webhook_events_received_at", webhook_events.c.received_at)
 Index("idx_api_access_events_integration_name", api_access_events.c.integration_name)
@@ -230,6 +248,10 @@ class PaymentStore:
     def close(self) -> None:
         self.engine.dispose()
 
+    def ping(self) -> None:
+        with self.engine.connect() as connection:
+            connection.execute(select(1)).scalar_one()
+
     def upsert_transaction_payload(
         self,
         payload: BaseModel | dict[str, Any],
@@ -258,6 +280,7 @@ class PaymentStore:
             metadata=data.get("metadata"),
             raw_payload=data,
             provider=provider,
+            update_metadata=False,
         )
 
     def upsert_transaction(
@@ -277,6 +300,7 @@ class PaymentStore:
         metadata: dict[str, Any] | None = None,
         raw_payload: dict[str, Any] | None = None,
         provider: str = "mkassa",
+        update_metadata: bool = True,
     ) -> None:
         now = self._now()
         values = {
@@ -287,7 +311,8 @@ class PaymentStore:
             "amount": self._parse_int(amount),
             "branch": None if branch is None else str(branch),
             "cashier": None if cashier is None else str(cashier),
-            "external_invoice_id": self._clean_string(external_invoice_id),
+            "external_invoice_id": self._clean_string(external_invoice_id)
+            or self._extract_external_invoice_id({"metadata": metadata}),
             "created_at": self._serialize_value(created_at),
             "paid_at": self._serialize_value(paid_at),
             "payment_token": payment_token,
@@ -303,27 +328,43 @@ class PaymentStore:
             ).mappings().first()
             if existing is None:
                 try:
-                    connection.execute(transactions.insert().values(**values))
+                    with connection.begin_nested():
+                        connection.execute(transactions.insert().values(**values))
                     return
                 except IntegrityError:
                     existing = connection.execute(
                         select(transactions).where(transactions.c.id == transaction_id)
                     ).mappings().first()
+                    if existing is None and self._is_paid_invoice_values(values):
+                        values["status"] = "duplicate"
+                        connection.execute(transactions.insert().values(**values))
+                        return
+                    if existing is None:
+                        raise
 
             merged = {
                 key: (value if value is not None else existing[key])
                 for key, value in values.items()
                 if key not in {"id", "raw_payload", "updated_at"}
             }
-            if metadata is not None:
+            if existing["external_invoice_id"]:
+                merged["external_invoice_id"] = existing["external_invoice_id"]
+            if metadata is not None and update_metadata:
                 existing_metadata = self._json_loads(existing["metadata"])
                 merged_metadata = existing_metadata if isinstance(existing_metadata, dict) else {}
                 merged_metadata.update(metadata)
                 merged["metadata"] = self._json_dumps(merged_metadata)
+            elif not update_metadata:
+                merged["metadata"] = existing["metadata"]
+            existing_status = existing["status"]
+            if existing_status in {"paid", "duplicate"} and merged.get("status") != existing_status:
+                merged["status"] = existing_status
             merged["raw_payload"] = values["raw_payload"]
             merged["updated_at"] = values["updated_at"]
-            connection.execute(
-                transactions.update().where(transactions.c.id == transaction_id).values(**merged)
+            self._update_transaction_with_paid_fallback(
+                connection,
+                transaction_id=transaction_id,
+                values=merged,
             )
 
     def save_webhook(
@@ -362,7 +403,10 @@ class PaymentStore:
             provider=provider,
             existing_transaction=existing_transaction,
         ):
-            self.upsert_transaction_payload(data, provider=provider)
+            self._update_transaction_from_webhook(
+                transaction_id=transaction_id,
+                data=data,
+            )
         return WebhookStoreResult(transaction_id=transaction_id, duplicate=duplicate)
 
     def get_transaction(self, transaction_id: str) -> dict[str, Any] | None:
@@ -371,6 +415,56 @@ class PaymentStore:
                 select(transactions).where(transactions.c.id == transaction_id)
             ).mappings().first()
         return self._transaction_row_to_dict(row) if row else None
+
+    def _update_transaction_from_webhook(
+        self,
+        *,
+        transaction_id: str,
+        data: dict[str, Any],
+    ) -> None:
+        now = self._now()
+        webhook_status = self._clean_string(data.get("status"))
+        with self.engine.begin() as connection:
+            existing = connection.execute(
+                select(transactions).where(transactions.c.id == transaction_id)
+            ).mappings().first()
+            if existing is None or webhook_status is None:
+                return
+
+            # A provider callback is allowed to advance payment state, but it must
+            # never rewrite invoice/client/bank metadata supplied by our caller.
+            # Once a payment is accepted, delayed cancel/unknown callbacks cannot
+            # downgrade it.
+            if existing["status"] in {"paid", "duplicate"} and webhook_status != "paid":
+                return
+
+            values: dict[str, Any] = {
+                "status": webhook_status,
+                "external_invoice_id": existing["external_invoice_id"],
+                "updated_at": now,
+            }
+            if existing["amount"] is None and data.get("amount") is not None:
+                values["amount"] = self._parse_int(data.get("amount"))
+            if existing["created_at"] is None and data.get("created_at") is not None:
+                values["created_at"] = self._serialize_value(data.get("created_at"))
+            if data.get("paid_at") is not None:
+                values["paid_at"] = self._serialize_value(data.get("paid_at"))
+            odengi_payload = data.get("odengi_payload")
+            if isinstance(odengi_payload, dict) and odengi_payload.get("trans_id") is not None:
+                existing_raw_payload = self._json_loads(existing["raw_payload"])
+                raw_payload = (
+                    dict(existing_raw_payload)
+                    if isinstance(existing_raw_payload, dict)
+                    else {}
+                )
+                raw_payload["provider_payment_id"] = str(odengi_payload["trans_id"])
+                values["raw_payload"] = self._json_dumps(raw_payload)
+
+            self._update_transaction_with_paid_fallback(
+                connection,
+                transaction_id=transaction_id,
+                values=values,
+            )
 
     def update_transaction_status(
         self,
@@ -396,10 +490,14 @@ class PaymentStore:
                 )
                 return
 
-            connection.execute(
-                transactions.update()
-                .where(transactions.c.id == transaction_id)
-                .values(status=status, updated_at=now)
+            self._update_transaction_with_paid_fallback(
+                connection,
+                transaction_id=transaction_id,
+                values={
+                    "status": status,
+                    "external_invoice_id": existing["external_invoice_id"],
+                    "updated_at": now,
+                },
             )
 
     def list_transactions(
@@ -619,18 +717,23 @@ class PaymentStore:
             if existing["paid_transaction_id"] != paid_transaction_id:
                 return self._tiger_invoice_export_row_to_dict(existing)
 
-            if status == "pending":
-                values["status"] = "pending"
-                values["error_message"] = None
-                values["exported_at"] = None
-            else:
-                values["status"] = "error"
-                values["last_attempt_at"] = now
+            existing_status = existing["status"]
+            update_values = {
+                key: value
+                for key, value in values.items()
+                if key != "error_message"
+            }
+            if existing_status == "pending" and status == "error":
+                update_values["status"] = "error"
+                update_values["error_message"] = self._clean_string(error_message)
+                update_values["last_attempt_at"] = now
+            elif existing_status == "error" and status == "error":
+                update_values["error_message"] = self._clean_string(error_message)
 
             connection.execute(
                 tiger_invoice_exports.update()
                 .where(tiger_invoice_exports.c.id == existing["id"])
-                .values(**values)
+                .values(**update_values)
             )
             row = connection.execute(
                 select(tiger_invoice_exports).where(tiger_invoice_exports.c.id == existing["id"])
@@ -654,6 +757,46 @@ class PaymentStore:
         with self.engine.begin() as connection:
             rows = connection.execute(query).mappings()
             return [self._tiger_invoice_export_row_to_dict(row) for row in rows]
+
+    def claim_tiger_invoice_exports(
+        self,
+        *,
+        limit: int = 20,
+        lease_seconds: int = 300,
+    ) -> list[dict[str, Any]]:
+        capped_limit = min(max(limit, 1), 100)
+        now = self._now()
+        stale_before = (datetime.now(UTC) - timedelta(seconds=lease_seconds)).isoformat()
+        claimed: list[dict[str, Any]] = []
+
+        with self.engine.begin() as connection:
+            connection.execute(
+                tiger_invoice_exports.update()
+                .where(tiger_invoice_exports.c.status == "processing")
+                .where(
+                    or_(
+                        tiger_invoice_exports.c.last_attempt_at.is_(None),
+                        tiger_invoice_exports.c.last_attempt_at < stale_before,
+                    )
+                )
+                .values(status="pending", updated_at=now)
+            )
+            candidate_ids = (
+                select(tiger_invoice_exports.c.id)
+                .where(tiger_invoice_exports.c.status == "pending")
+                .order_by(tiger_invoice_exports.c.created_at, tiger_invoice_exports.c.id)
+                .limit(capped_limit)
+            )
+            rows = connection.execute(
+                tiger_invoice_exports.update()
+                .where(tiger_invoice_exports.c.id.in_(candidate_ids))
+                .where(tiger_invoice_exports.c.status == "pending")
+                .values(status="processing", last_attempt_at=now, updated_at=now)
+                .returning(tiger_invoice_exports)
+            ).mappings().all()
+            rows.sort(key=lambda row: (row["created_at"], row["id"]))
+            claimed.extend(self._tiger_invoice_export_row_to_dict(row) for row in rows)
+        return claimed
 
     def get_tiger_invoice_export(self, event_id: int) -> dict[str, Any] | None:
         with self.engine.begin() as connection:
@@ -696,6 +839,7 @@ class PaymentStore:
             result = connection.execute(
                 tiger_invoice_exports.update()
                 .where(tiger_invoice_exports.c.id == event_id)
+                .where(tiger_invoice_exports.c.status.in_({"pending", "processing"}))
                 .values(**values)
             )
             if result.rowcount == 0:
@@ -711,6 +855,7 @@ class PaymentStore:
             result = connection.execute(
                 tiger_invoice_exports.update()
                 .where(tiger_invoice_exports.c.id == event_id)
+                .where(tiger_invoice_exports.c.status.in_({"error", "skipped"}))
                 .values(
                     status="pending",
                     tiger_logical_ref=None,
@@ -820,6 +965,53 @@ class PaymentStore:
             rows = connection.execute(query).mappings()
             return [self._one_c_payment_export_row_to_dict(row) for row in rows]
 
+    def get_one_c_payment_export(self, event_id: int) -> dict[str, Any] | None:
+        with self.engine.begin() as connection:
+            row = connection.execute(
+                select(one_c_payment_exports).where(one_c_payment_exports.c.id == event_id)
+            ).mappings().first()
+        return self._one_c_payment_export_row_to_dict(row) if row else None
+
+    def claim_one_c_payment_exports(
+        self,
+        *,
+        limit: int = 20,
+        lease_seconds: int = 300,
+    ) -> list[dict[str, Any]]:
+        capped_limit = min(max(limit, 1), 100)
+        now = self._now()
+        stale_before = (datetime.now(UTC) - timedelta(seconds=lease_seconds)).isoformat()
+        claimed: list[dict[str, Any]] = []
+
+        with self.engine.begin() as connection:
+            connection.execute(
+                one_c_payment_exports.update()
+                .where(one_c_payment_exports.c.status == "processing")
+                .where(
+                    or_(
+                        one_c_payment_exports.c.last_attempt_at.is_(None),
+                        one_c_payment_exports.c.last_attempt_at < stale_before,
+                    )
+                )
+                .values(status="pending", updated_at=now)
+            )
+            candidate_ids = (
+                select(one_c_payment_exports.c.id)
+                .where(one_c_payment_exports.c.status == "pending")
+                .order_by(one_c_payment_exports.c.created_at, one_c_payment_exports.c.id)
+                .limit(capped_limit)
+            )
+            rows = connection.execute(
+                one_c_payment_exports.update()
+                .where(one_c_payment_exports.c.id.in_(candidate_ids))
+                .where(one_c_payment_exports.c.status == "pending")
+                .values(status="processing", last_attempt_at=now, updated_at=now)
+                .returning(one_c_payment_exports)
+            ).mappings().all()
+            rows.sort(key=lambda row: (row["created_at"], row["id"]))
+            claimed.extend(self._one_c_payment_export_row_to_dict(row) for row in rows)
+        return claimed
+
     def update_one_c_payment_export_result(
         self,
         event_id: int,
@@ -850,6 +1042,7 @@ class PaymentStore:
             result = connection.execute(
                 one_c_payment_exports.update()
                 .where(one_c_payment_exports.c.id == event_id)
+                .where(one_c_payment_exports.c.status.in_({"pending", "processing"}))
                 .values(**values)
             )
             if result.rowcount == 0:
@@ -865,6 +1058,7 @@ class PaymentStore:
             result = connection.execute(
                 one_c_payment_exports.update()
                 .where(one_c_payment_exports.c.id == event_id)
+                .where(one_c_payment_exports.c.status.in_({"error", "skipped"}))
                 .values(
                     status="pending",
                     one_c_document_id=None,
@@ -983,6 +1177,15 @@ class PaymentStore:
                     "CREATE INDEX IF NOT EXISTS idx_transactions_external_invoice_id "
                     "ON transactions (external_invoice_id)"
                 )
+            if transaction_columns:
+                self._deduplicate_paid_invoice_transactions(connection)
+                connection.exec_driver_sql(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_paid_invoice "
+                    "ON transactions (external_invoice_id) "
+                    "WHERE status = 'paid' "
+                    "AND external_invoice_id IS NOT NULL "
+                    "AND external_invoice_id <> ''"
+                )
 
             webhook_columns = {
                 row[1]
@@ -1074,10 +1277,91 @@ class PaymentStore:
                 )
 
     @staticmethod
+    def _deduplicate_paid_invoice_transactions(connection: Any) -> None:
+        paid_rows = connection.execute(
+            select(
+                transactions.c.id,
+                transactions.c.external_invoice_id,
+                transactions.c.paid_at,
+                transactions.c.created_at,
+                transactions.c.updated_at,
+            )
+            .where(transactions.c.status == "paid")
+            .where(transactions.c.external_invoice_id.is_not(None))
+            .where(transactions.c.external_invoice_id != "")
+        ).mappings().all()
+        paid_by_invoice: dict[str, list[Any]] = {}
+        for row in paid_rows:
+            paid_by_invoice.setdefault(str(row["external_invoice_id"]), []).append(row)
+
+        inspector = inspect(connection)
+        tiger_winners: dict[str, str] = {}
+        if inspector.has_table("tiger_invoice_exports"):
+            rows = connection.execute(
+                select(
+                    tiger_invoice_exports.c.invoice_id,
+                    tiger_invoice_exports.c.paid_transaction_id,
+                )
+            ).mappings()
+            tiger_winners = {
+                str(row["invoice_id"]): str(row["paid_transaction_id"])
+                for row in rows
+            }
+
+        one_c_candidates: dict[str, list[tuple[int, str]]] = {}
+        if inspector.has_table("one_c_payment_exports"):
+            rows = connection.execute(
+                select(
+                    one_c_payment_exports.c.invoice_id,
+                    one_c_payment_exports.c.payment_id,
+                    one_c_payment_exports.c.status,
+                )
+            ).mappings()
+            status_priority = {"success": 0, "processing": 1, "pending": 1, "error": 2}
+            for row in rows:
+                invoice_id = str(row["invoice_id"])
+                payment_id = str(row["payment_id"])
+                priority = status_priority.get(str(row["status"]), 3)
+                one_c_candidates.setdefault(invoice_id, []).append((priority, payment_id))
+
+        for invoice_id, invoice_rows in paid_by_invoice.items():
+            if len(invoice_rows) < 2:
+                continue
+            paid_ids = {str(row["id"]) for row in invoice_rows}
+            winner_id = tiger_winners.get(invoice_id)
+            if winner_id not in paid_ids:
+                winner_id = None
+            if winner_id is None:
+                for _, payment_id in sorted(one_c_candidates.get(invoice_id, [])):
+                    if payment_id in paid_ids:
+                        winner_id = payment_id
+                        break
+            if winner_id is None:
+                winner_id = str(
+                    min(
+                        invoice_rows,
+                        key=lambda row: (
+                            row["paid_at"] or row["created_at"] or row["updated_at"] or "",
+                            row["id"],
+                        ),
+                    )["id"]
+                )
+
+            duplicate_ids = paid_ids - {winner_id}
+            if duplicate_ids:
+                connection.execute(
+                    transactions.update()
+                    .where(transactions.c.id.in_(duplicate_ids))
+                    .where(transactions.c.status == "paid")
+                    .values(status="duplicate")
+                )
+
+    @staticmethod
     def _create_engine(database_url: str) -> Engine:
         connect_args: dict[str, Any] = {}
         if database_url.startswith("sqlite:///"):
             connect_args["check_same_thread"] = False
+            connect_args["timeout"] = 30
         return create_engine(database_url, pool_pre_ping=True, future=True, connect_args=connect_args)
 
     @staticmethod
@@ -1155,6 +1439,35 @@ class PaymentStore:
             return None
 
     @staticmethod
+    def _is_paid_invoice_values(values: dict[str, Any]) -> bool:
+        return values.get("status") == "paid" and bool(values.get("external_invoice_id"))
+
+    def _update_transaction_with_paid_fallback(
+        self,
+        connection: Any,
+        *,
+        transaction_id: str,
+        values: dict[str, Any],
+    ) -> None:
+        statement = (
+            transactions.update()
+            .where(transactions.c.id == transaction_id)
+            .values(**values)
+        )
+        try:
+            with connection.begin_nested():
+                connection.execute(statement)
+        except IntegrityError:
+            if not self._is_paid_invoice_values(values):
+                raise
+            fallback_values = {**values, "status": "duplicate"}
+            connection.execute(
+                transactions.update()
+                .where(transactions.c.id == transaction_id)
+                .values(**fallback_values)
+            )
+
+    @staticmethod
     def _webhook_matches_existing_transaction(
         data: dict[str, Any],
         *,
@@ -1169,10 +1482,10 @@ class PaymentStore:
         webhook_amount = PaymentStore._parse_int(data.get("amount"))
         webhook_status = PaymentStore._clean_string(data.get("status"))
 
-        if webhook_status == "paid" and (existing_amount is None or webhook_amount is None):
-            return False
-        if existing_amount is not None and webhook_amount is not None:
-            return existing_amount == webhook_amount
+        if existing_amount is not None:
+            return webhook_amount is not None and existing_amount == webhook_amount
+        if webhook_status == "paid":
+            return webhook_amount is not None
         return True
 
     @staticmethod

@@ -11,7 +11,6 @@ export default defineConfig(({ mode }) => {
     process.env.VITE_API_PROXY_TARGET ?? env.VITE_API_PROXY_TARGET ?? "http://127.0.0.1:8502";
   const identityProxyTarget =
     process.env.VITE_IDENTITY_PROXY_TARGET ?? env.VITE_IDENTITY_PROXY_TARGET ?? "http://127.0.0.1:8500";
-  const adminApiKey = process.env.PAYMENT_ADMIN_API_KEY ?? env.PAYMENT_ADMIN_API_KEY ?? "";
 
   return {
     envDir: projectEnvDir,
@@ -26,13 +25,6 @@ export default defineConfig(({ mode }) => {
         "/api": {
           target: apiProxyTarget,
           changeOrigin: true,
-          configure: (proxy) => {
-            proxy.on("proxyReq", (proxyReq) => {
-              if (adminApiKey) {
-                proxyReq.setHeader("X-Admin-Key", adminApiKey);
-              }
-            });
-          },
         },
         "/health": {
           target: apiProxyTarget,

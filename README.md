@@ -48,10 +48,14 @@ http://localhost:8502/ui/access-events
 http://localhost:7502
 ```
 
-React admin сам ходит в backend через `/api`. Если `PAYMENT_ADMIN_API_KEY` заполнен,
-admin endpoints принимают `X-Admin-Key`; также admin endpoints принимают
-`Authorization: Bearer <identity_access_token>` и проверяют токен через
-`IDENTITY_API_URL`.
+React admin сам ходит в backend через `/api` и передает
+`Authorization: Bearer <identity_access_token>`. Backend локально проверяет
+подпись и срок JWT через `IDENTITY_SECRET_KEY` / `IDENTITY_ALGORITHM`, затем
+требует `payments.transactions.read` для чтения и `payments.qr.create` для
+изменений/cancel/reset. `PAYMENT_ADMIN_API_KEY`
+оставлен только как необязательный server-to-server fallback; frontend proxy его
+не подставляет. Без валидного Bearer-токена или корректного admin key endpoints
+закрыты.
 
 React admin открывается через локальную страницу `/login`, как Converter: форма
 отправляет email/password в Turkuaz Identity через `/identity-api/auth/login`,
@@ -84,12 +88,9 @@ docker compose up --build
 
 Compose поднимает приложение с SQLite-файлом в Docker volume. Сервис будет доступен на `http://localhost:8502`.
 React admin будет доступен на `http://localhost:7502`.
-По умолчанию Docker-прокси использует `PAYMENT_ADMIN_API_KEY=admin-dev-key`.
-Если нужен другой admin-ключ, его можно передать так:
-
-```bash
-PAYMENT_ADMIN_API_KEY=secret-for-admin docker compose up --build
-```
+Перед запуском укажите в `.env` тот же `IDENTITY_SECRET_KEY`, который использует
+Turkuaz Identity. Docker frontend собирается как static bundle под nginx и
+никогда не получает `PAYMENT_ADMIN_API_KEY`.
 
 Для локального запуска без Docker используйте SQLite:
 
@@ -141,12 +142,15 @@ PAYMENT_PROVIDER_BY_INTEGRATION=1c_obank:odengi,site:mkassa,pos:odengi
 
 Админские endpoints `/api/v1/local/...` и `/api/v1/admin/...` принимают либо
 `Authorization: Bearer <identity_access_token>`, либо серверный `X-Admin-Key`
-из `PAYMENT_ADMIN_API_KEY`. Этот ключ не нужно передавать интеграторам.
+из `PAYMENT_ADMIN_API_KEY`. Bearer-токен должен содержать
+`payments.transactions.read`; изменяющие операции дополнительно требуют
+`payments.qr.create`. Этот ключ не нужно передавать интеграторам или frontend.
 
-Webhook'и банков не требуют `X-Integration-Key` и принимаются по URL без
-дополнительного secret-параметра. Backend сохраняет callback в журнал, но
-обновляет оплату только если транзакция с таким `id` уже была создана нашим
-сервисом.
+Webhook'и банков не требуют `X-Integration-Key` и сохраняют исходные callback
+URL без дополнительных query-параметров или заголовков. Backend сохраняет
+callback в журнал, но обновляет только статус, сумму при ранее неизвестной сумме
+и даты уже созданной транзакции. Callback не может заменить invoice/client/bank
+metadata, а оплаченная транзакция не понижается поздним callback.
 
 | Метод | URL | Назначение |
 | --- | --- | --- |

@@ -14,12 +14,12 @@ import {
   fetchAccessEvents,
   fetchOneCPaymentEvents,
   fetchPrintQrCodes,
+  fetchQrImage,
   fetchTigerInvoiceEvents,
   fetchTransactions,
   fetchWebhooks,
   getToken,
   loginViaIdentity,
-  qrImageUrl,
   refreshTransaction,
   resetOneCPaymentEvent,
   resetTigerInvoiceEvent,
@@ -1297,12 +1297,67 @@ function SavedQrImage({
   transactionId: string;
 }) {
   return (
-    <img
+    <AuthenticatedQrImage
       alt={`QR для платежа ${transactionId}`}
       className="qr-image saved-qr-image"
       height={220}
-      src={qrImageUrl(payload)}
+      payload={payload}
       width={220}
+    />
+  );
+}
+
+function AuthenticatedQrImage({
+  payload,
+  alt,
+  className,
+  height,
+  width,
+}: {
+  payload: string;
+  alt: string;
+  className: string;
+  height: number;
+  width: number;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+    setSrc(null);
+    setError(null);
+
+    fetchQrImage(payload)
+      .then((blob) => {
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setSrc(objectUrl);
+      })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [payload]);
+
+  if (error) {
+    return <span className="error-copy">QR не загружен: {error}</span>;
+  }
+
+  return (
+    <img
+      alt={alt}
+      aria-busy={!src}
+      className={className}
+      height={height}
+      src={src ?? undefined}
+      width={width}
     />
   );
 }
@@ -1638,11 +1693,11 @@ function QrDemoPanel({
           <p className="empty-copy">Заполните поля и создайте динамический QR.</p>
         ) : (
           <>
-            <img
+            <AuthenticatedQrImage
               alt="QR code"
               className="qr-image"
               height={260}
-              src={qrImageUrl(result.payment_token)}
+              payload={result.payment_token}
               width={260}
             />
             <dl>

@@ -247,6 +247,11 @@ X-Integration-Key: <tiger-worker-secret>
 `tiger`, for example `INTEGRATION_KEYS=1c:...,tiger:...`. 1C/POS/site keys are
 not allowed to poll or acknowledge the Tiger queue.
 
+The pull atomically changes selected rows from `pending` to `processing`.
+Another worker cannot receive the same active lease. If no result is reported
+within `EXPORT_QUEUE_LEASE_SECONDS`, PaymentGateway makes the event available
+again.
+
 Recommended event payload:
 
 ```json
@@ -298,7 +303,7 @@ document identifiers such as `tigerLogicalRef` and `tigerFicheNo`.
 
 The Windows worker should:
 
-1. Poll PaymentGateway for pending paid-invoice events.
+1. Claim paid-invoice events from PaymentGateway.
 2. Validate the server-to-server key.
 3. Process only invoice events whose invoice is marked paid.
 4. Connect to Logo via `UnityObjects`.
@@ -307,7 +312,9 @@ The Windows worker should:
 6. Find the client and invoice/order by configured fields.
 7. Create the agreed payment document.
 8. Report `Success` or `Error` back to PaymentGateway.
-9. Retry temporary errors with a retry limit.
+9. Leave an event unacknowledged when the polling/transport cycle fails so the
+   processing lease can retry it; report deterministic validation/write errors
+   as `error` for admin review and reset.
 
 Recommended incoming table:
 
@@ -370,7 +377,7 @@ bitness, credentials, firm, or period.
 
 Build a Windows worker on the Tiger server:
 
-- Poll PaymentGateway for pending paid-invoice export events.
+- Claim PaymentGateway paid-invoice export events as `processing`.
 - Process only events whose invoice is marked paid.
 - Use `paidProvider` and `targetBankAccountCode` to choose the correct Tiger bank.
 - Report success/error back to PaymentGateway.

@@ -22,6 +22,7 @@ from payment_gateway.store import PaymentStore, WebhookStoreResult
 REUSABLE_INVOICE_QR_STATUSES = {"inited", "waiting", "qr_scanned", "paid"}
 AUTO_CANCEL_INVOICE_QR_STATUSES = {"inited", "waiting", "qr_scanned", "unknown"}
 PAID_STATUS = "paid"
+BISHKEK_TIMEZONE = timezone(timedelta(hours=6))
 logger = logging.getLogger(__name__)
 
 
@@ -103,6 +104,9 @@ class PaymentService:
             transaction_id_override=transaction_id,
         )
         await self.cancel_other_invoice_transactions_if_paid(transaction_id)
+        saved = self.store.get_transaction(transaction_id)
+        if saved is not None:
+            return Transaction.model_validate(saved)
         return response
 
     async def cancel_transaction(
@@ -173,30 +177,6 @@ class PaymentService:
     ) -> WebhookStoreResult:
         provider = self.gateway.provider(provider_name)
         result = self.store.save_webhook(payload, provider=provider.name)
-        saved_transaction = self.store.get_transaction(result.transaction_id)
-        if saved_transaction is not None and saved_transaction.get("status") == PAID_STATUS:
-            external_invoice_id = saved_transaction.get("external_invoice_id")
-            if isinstance(external_invoice_id, str) and external_invoice_id.strip():
-                paid_siblings = self.store.list_invoice_transactions_for_cancel(
-                    external_invoice_id=external_invoice_id,
-                    exclude_transaction_id=result.transaction_id,
-                    statuses={PAID_STATUS},
-                )
-                if paid_siblings:
-                    # A second paid callback must never become a second
-                    # accounting/Tiger/1C payment for the same invoice.
-                    logger.warning(
-                        "Ignoring duplicate paid transaction %s for invoice %s; winner is %s",
-                        result.transaction_id,
-                        external_invoice_id,
-                        paid_siblings[0]["id"],
-                    )
-                    self.store.update_transaction_status(
-                        result.transaction_id,
-                        status="duplicate",
-                        provider=provider.name,
-                    )
-                    return result
         await self.cancel_other_invoice_transactions_if_paid(result.transaction_id)
         return result
 
@@ -341,7 +321,8 @@ def _paid_payment_fields(transaction: dict) -> dict[str, object]:
 
     provider = str(transaction.get("provider") or "unknown")
     provider_payment_id = (
-        raw_payload.get("provider_transaction_id")
+        raw_payload.get("provider_payment_id")
+        or raw_payload.get("provider_transaction_id")
         or raw_payload.get("invoice_id")
         or raw_payload.get("id")
         or transaction.get("id")
@@ -394,7 +375,11 @@ def _normalize_export_datetime(value: object) -> str | None:
         if timestamp >= 100_000_000_000:
             timestamp //= 1000
         try:
-            return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+            return (
+                datetime.fromtimestamp(timestamp, timezone.utc)
+                .astimezone(BISHKEK_TIMEZONE)
+                .isoformat()
+            )
         except (OverflowError, OSError, ValueError):
             return None
 
@@ -419,5 +404,7 @@ def _normalize_export_datetime(value: object) -> str | None:
             return None
 
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=6)))
+        parsed = parsed.replace(tzinfo=BISHKEK_TIMEZONE)
+    else:
+        parsed = parsed.astimezone(BISHKEK_TIMEZONE)
     return parsed.isoformat()

@@ -17,7 +17,7 @@ from payment_gateway.models import (
 )
 from payment_gateway.providers.base import PaymentProvider
 from payment_gateway.service import PaymentService
-from payment_gateway.store import SQLitePaymentStore
+from payment_gateway.store import SQLitePaymentStore, tiger_invoice_exports
 
 
 class FakeProvider(PaymentProvider):
@@ -261,7 +261,103 @@ async def test_payment_service_does_not_export_second_paid_invoice_qr(tmp_path) 
         ),
         provider_name="mkassa",
     )
+    await service.save_webhook(
+        WebhookPayload(id="QR-2", status="canceled", amount=100),
+        provider_name="mkassa",
+    )
 
     assert store.get_transaction("QR-2")["status"] == "duplicate"
     assert store.list_one_c_payment_exports(limit=10) == []
     assert store.list_tiger_invoice_exports(limit=10) == []
+
+
+@pytest.mark.asyncio
+async def test_payment_service_refresh_keeps_second_paid_invoice_qr_duplicate(tmp_path) -> None:
+    store = SQLitePaymentStore(tmp_path / "app.db")
+    store.initialize()
+    provider = FakeProvider("mkassa", "QR-2")
+    service = PaymentService(
+        gateway=PaymentGateway([provider], default_provider="mkassa"),
+        store=store,
+    )
+    invoice_id = "INV-REFRESH-DUPLICATE"
+    store.upsert_transaction(
+        transaction_id="QR-1",
+        status="paid",
+        transaction_type="qr",
+        amount=100,
+        external_invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id},
+        provider="mkassa",
+    )
+    store.upsert_transaction(
+        transaction_id="QR-2",
+        status="waiting",
+        transaction_type="qr",
+        amount=100,
+        external_invoice_id=invoice_id,
+        metadata={"invoice_id": invoice_id},
+        provider="mkassa",
+    )
+
+    refreshed = await service.get_transaction("QR-2")
+
+    assert refreshed.status == "duplicate"
+    assert store.get_transaction("QR-2")["status"] == "duplicate"
+    assert store.list_one_c_payment_exports(limit=10) == []
+    assert store.list_tiger_invoice_exports(limit=10) == []
+
+
+def test_tiger_error_event_requires_explicit_reset(tmp_path) -> None:
+    store = SQLitePaymentStore(tmp_path / "app.db")
+    store.initialize()
+    event = {
+        "invoiceId": "INV-TIGER-ERROR",
+        "paidTransactionId": "PAY-TIGER-ERROR",
+        "paidProvider": "mkassa",
+        "targetBankAccountCode": "BANK-KGS",
+        "clientCode": "CARI.001",
+        "amountTyiyn": 100,
+        "amount": 1.0,
+        "currency": "KGS",
+    }
+    created = store.upsert_tiger_invoice_export(event)
+    failed = store.update_tiger_invoice_export_result(
+        created["id"],
+        status="error",
+        error_message="temporary failure",
+    )
+    rebuilt = store.upsert_tiger_invoice_export(event, status="pending")
+
+    assert failed is not None
+    assert failed["status"] == "error"
+    assert rebuilt["status"] == "error"
+    assert rebuilt["error_message"] == "temporary failure"
+
+
+def test_tiger_processing_lease_can_be_reclaimed_after_expiry(tmp_path) -> None:
+    store = SQLitePaymentStore(tmp_path / "app.db")
+    store.initialize()
+    event = {
+        "invoiceId": "INV-TIGER-LEASE",
+        "paidTransactionId": "PAY-TIGER-LEASE",
+        "paidProvider": "mkassa",
+        "targetBankAccountCode": "BANK-KGS",
+        "clientCode": "CARI.001",
+        "amountTyiyn": 100,
+        "amount": 1.0,
+        "currency": "KGS",
+    }
+    created = store.upsert_tiger_invoice_export(event)
+    first_claim = store.claim_tiger_invoice_exports(lease_seconds=30)
+    with store.engine.begin() as connection:
+        connection.execute(
+            tiger_invoice_exports.update()
+            .where(tiger_invoice_exports.c.id == created["id"])
+            .values(last_attempt_at=None)
+        )
+    reclaimed = store.claim_tiger_invoice_exports(lease_seconds=30)
+
+    assert first_claim[0]["status"] == "processing"
+    assert reclaimed[0]["id"] == created["id"]
+    assert reclaimed[0]["status"] == "processing"

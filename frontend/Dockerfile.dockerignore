@@ -9,4 +9,3 @@ PaymentGateway/frontend/dist/**
 PaymentGateway/frontend/.vite
 PaymentGateway/frontend/.vite/**
 PaymentGateway/frontend/tsconfig.tsbuildinfo
-PaymentGateway/frontend/pnpm-lock.yaml

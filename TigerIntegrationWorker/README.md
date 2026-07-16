@@ -18,8 +18,9 @@ it in this folder and deploy it to the Windows Tiger server separately.
   logs out.
 - `GET /tiger/clients/sample` - reads 5 client rows from `LG_126_CLCARD`.
 - `POST /api/invoices/paid` - validates or posts one paid-invoice event.
-- background poller - pulls pending events from PaymentGateway and reports the
-  resulting Tiger logical reference and fiche number.
+- background poller - atomically claims events as `processing` from
+  PaymentGateway and reports the resulting Tiger logical reference and fiche
+  number; an unacknowledged lease is retried.
 
 The active write path is:
 

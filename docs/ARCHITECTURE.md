@@ -109,7 +109,6 @@ Do not expose:
 - MKassa API key;
 - O!Dengi SID/password;
 - bank-internal auth;
-- bank-specific webhook secret;
 - raw bank endpoint URLs.
 
 ## Audit
