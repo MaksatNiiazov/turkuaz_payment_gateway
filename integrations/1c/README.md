@@ -1,11 +1,21 @@
 # 1C integration sources
 
-This directory contains source snippets and module templates for the 1C side of
-PaymentGateway. Files with deployed credentials or environment-specific exports
-must stay under the ignored `.local-artifacts/` directory.
+Этот каталог повторяет структуру метаданных 1С. Файлы с выданными ключами и
+локальными настройками должны оставаться в игнорируемом `.local-artifacts/`.
 
-- `PayQR_1C_InvoiceQRCode_Module.bsl` creates or reuses invoice QR codes.
-- `PayQR_1C_PaymentSync_Module.bsl` imports successful payments into 1C.
-- `PayQR_1C_LoadPayments_CommandModule.bsl` provides the manual import command.
-- `PayQR_1C_ExportTigerClientCodes_*` exports Tiger client mappings.
-- `PayQR_1C_Diagnostics.bsl` contains metadata diagnostics used during setup.
+```text
+Общие/
+├── ОбщиеМодули/
+│   ├── PayQR_ЗагрузкаОплат.bsl
+│   ├── PayQR_ПечатьНакладнойQR.bsl
+│   ├── PayQR_Настройки.bsl
+│   ├── PayQR_Диагностика.bsl
+│   └── ДополненияКPayQR_ЗагрузкаОплат/
+│       └── ВыгрузкаКодовTiger.bsl
+└── ОбщиеКоманды/
+    ├── PayQR_ЗагрузитьОплаты/МодульКоманды.bsl
+    └── PayQR_ВыгрузитьКодыTiger/МодульКоманды.bsl
+```
+
+Файлы из `ДополненияКPayQR_ЗагрузкаОплат` не создают отдельный объект 1С: их
+содержимое добавляется в общий модуль `PayQR_ЗагрузкаОплат`.
